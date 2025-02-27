@@ -1,0 +1,79 @@
+# Note: This crate must be built using cargo build-sbf
+
+[package]
+name = "evm-loader"
+version = "1.17.5"
+description = "Neon EVM loader"
+authors = ["NeonLabs Maintainers <maintainers@neonlabs.org>"]
+edition = "2021"
+include = ["config/*.toml"]
+
+[features]
+#! The next feature defines configurations for deploys on different blockchains
+## Builds NeonEVM for testing with goverment system
+govertest = []
+## Builds NeonEVM for mainnet deployment
+mainnet = []
+## Builds NeonEVM for testnet deployment
+testnet = []
+## Builds NeonEVM for devnet deployment
+devnet = []
+## Builds NeonEVM for CI environment
+ci = []
+## Builds NeonEVM for rollup deployment with settings adjusted.
+rollup = []
+
+## Builds NeonEVM program for `emergency` mode. In this mode, NeonEVM doesn't process
+## any transaction and return error `ProgramError::InvalidInstructionData` with comment
+## `Emergency image: all instructions are rejected`. This feature can be used with
+## the feature which defines configuration. In this case, the resulting image will
+## contain a configuration for appropriated deployment.
+emergency = []
+
+## Do not include entrypoint (for include in other application)
+no-entrypoint = []
+test-bpf = []
+custom-heap = []
+default = ["custom-heap"]
+
+[dependencies]
+linked_list_allocator = { version = "0.10", default-features = false }
+evm-loader-macro = { path = "../program-macro" }
+solana-program.workspace = true
+spl-token = { version = "~4.0", default-features = false, features = ["no-entrypoint"] }
+spl-associated-token-account = { version = "~2.3", default-features = false, features = ["no-entrypoint"] }
+mpl-token-metadata = { version = "~4.1", default-features = false }
+thiserror = "1.0"
+arrayref = "0.3.8"
+hex = "0.4.3"
+ripemd = "0.1"
+rlp = "0.5"
+static_assertions = "1"
+borsh = "0.10"
+bincode = "1"
+serde_bytes = "0.11.15"
+serde = { version = "1.0.204", default-features = false, features = ["derive", "rc"] }
+ethnum = { version = "1.5", default-features = false, features = ["serde"] }
+cfg-if = { version = "1.0" }
+log = { version = "0.4", default-features = false, optional = true }
+strum = { version = "0.26.3", features = ["derive"] }
+maybe-async = "0.2.10"
+async-trait = { version = "0.1.81", optional = true }
+allocator-api2 = "0.2.16"
+memoffset = "0.9.1"
+bytes = "1.6.1"
+
+[target.'cfg(target_os = "solana")'.dependencies.maybe-async]
+version = "0.2.10"
+features = ["is_sync"]
+
+[dev-dependencies]
+tokio = { version = "1.39", features = ["full"] }
+solana-sdk.workspace = true
+
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[package.metadata.docs.rs]
+targets = ["x86_64-unknown-linux-gnu"]

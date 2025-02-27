@@ -1,0 +1,293 @@
+use super::{Operator, Treasury};
+use crate::error::{Error, Result};
+use solana_program::account_info::AccountInfo;
+use solana_program::program::{invoke_signed_unchecked, invoke_unchecked};
+use solana_program::pubkey::Pubkey;
+use solana_program::system_program;
+use solana_program::{rent::Rent, system_instruction};
+use std::convert::From;
+use std::ops::Deref;
+
+pub struct System<'a>(&'a AccountInfo<'a>);
+
+impl<'a> From<&System<'a>> for &'a AccountInfo<'a> {
+    fn from(f: &System<'a>) -> Self {
+        f.0
+    }
+}
+
+impl<'a> System<'a> {
+    pub fn from_account(info: &'a AccountInfo<'a>) -> Result<Self> {
+        if !system_program::check_id(info.key) {
+            return Err(Error::AccountInvalidKey(*info.key, system_program::ID));
+        }
+
+        Ok(Self(info))
+    }
+
+    pub fn create_pda_account(
+        &self,
+        owner: &Pubkey,
+        payer: &Operator<'a>,
+        new_account: &AccountInfo<'a>,
+        new_account_seeds: &[&[u8]],
+        space: usize,
+        rent: &Rent,
+    ) -> Result<()> {
+        let minimum_balance = rent.minimum_balance(space).max(1);
+
+        if new_account.lamports() > 0 {
+            let required_lamports = minimum_balance.saturating_sub(new_account.lamports());
+
+            if required_lamports > 0 {
+                invoke_unchecked(
+                    &system_instruction::transfer(payer.key, new_account.key, required_lamports),
+                    &[payer.info.clone(), new_account.clone(), self.0.clone()],
+                )?;
+            }
+
+            invoke_signed_unchecked(
+                &system_instruction::allocate(new_account.key, space as u64),
+                &[new_account.clone(), self.0.clone()],
+                &[new_account_seeds],
+            )?;
+
+            invoke_signed_unchecked(
+                &system_instruction::assign(new_account.key, owner),
+                &[new_account.clone(), self.0.clone()],
+                &[new_account_seeds],
+            )?;
+        } else {
+            invoke_signed_unchecked(
+                &system_instruction::create_account(
+                    payer.key,
+                    new_account.key,
+                    minimum_balance,
+                    space as u64,
+                    owner,
+                ),
+                &[payer.info.clone(), new_account.clone(), self.0.clone()],
+                &[new_account_seeds],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    pub fn create_pda_account_with_treasury_payer(
+        &self,
+        owner: &Pubkey,
+        payer: &Treasury<'a>,
+        new_account: &AccountInfo<'a>,
+        new_account_seeds: &[&[u8]],
+        space: usize,
+        rent: &Rent,
+    ) -> Result<()> {
+        let minimum_balance = rent.minimum_balance(space).max(1);
+
+        let treasury_seeds: &[&[u8]] = &[
+            crate::config::TREASURY_POOL_SEED.as_bytes(),
+            &payer.index().to_le_bytes(),
+            &[payer.bump_seed()],
+        ];
+
+        if new_account.lamports() > 0 {
+            let required_lamports = minimum_balance.saturating_sub(new_account.lamports());
+
+            if required_lamports > 0 {
+                invoke_signed_unchecked(
+                    &system_instruction::transfer(payer.key, new_account.key, required_lamports),
+                    &[payer.info.clone(), new_account.clone(), self.0.clone()],
+                    &[treasury_seeds],
+                )?;
+            }
+
+            invoke_signed_unchecked(
+                &system_instruction::allocate(new_account.key, space as u64),
+                &[new_account.clone(), self.0.clone()],
+                &[new_account_seeds],
+            )?;
+
+            invoke_signed_unchecked(
+                &system_instruction::assign(new_account.key, owner),
+                &[new_account.clone(), self.0.clone()],
+                &[new_account_seeds],
+            )?;
+        } else {
+            invoke_signed_unchecked(
+                &system_instruction::create_account(
+                    payer.key,
+                    new_account.key,
+                    minimum_balance,
+                    space as u64,
+                    owner,
+                ),
+                &[payer.info.clone(), new_account.clone(), self.0.clone()],
+                &[treasury_seeds, new_account_seeds],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_account_with_seed(
+        &self,
+        owner: &Pubkey,
+        payer: &Operator<'a>,
+        base: &AccountInfo<'a>,
+        signer_seeds: &[&[u8]],
+        new_account: &AccountInfo<'a>,
+        seed: &str,
+        space: usize,
+        rent: &Rent,
+    ) -> Result<()> {
+        let minimum_balance = rent.minimum_balance(space).max(1);
+
+        if new_account.lamports() > 0 {
+            let required_lamports = minimum_balance.saturating_sub(new_account.lamports());
+
+            if required_lamports > 0 {
+                invoke_unchecked(
+                    &system_instruction::transfer(payer.key, new_account.key, required_lamports),
+                    &[payer.info.clone(), new_account.clone(), self.0.clone()],
+                )?;
+            }
+
+            invoke_signed_unchecked(
+                &system_instruction::allocate_with_seed(
+                    new_account.key,
+                    base.key,
+                    seed,
+                    space as u64,
+                    owner,
+                ),
+                &[new_account.clone(), base.clone(), self.0.clone()],
+                &[signer_seeds],
+            )?;
+
+            invoke_signed_unchecked(
+                &system_instruction::assign_with_seed(new_account.key, base.key, seed, owner),
+                &[new_account.clone(), base.clone(), self.0.clone()],
+                &[signer_seeds],
+            )?;
+        } else {
+            invoke_signed_unchecked(
+                &system_instruction::create_account_with_seed(
+                    payer.key,
+                    new_account.key,
+                    base.key,
+                    seed,
+                    minimum_balance,
+                    space as u64,
+                    owner,
+                ),
+                &[
+                    payer.info.clone(),
+                    new_account.clone(),
+                    base.clone(),
+                    self.0.clone(),
+                ],
+                &[signer_seeds],
+            )?;
+        }
+
+        Ok(())
+    }
+
+    pub fn transfer(
+        &self,
+        source: &Operator<'a>,
+        target: &AccountInfo<'a>,
+        lamports: u64,
+    ) -> Result<()> {
+        crate::debug_print!(
+            "system transfer {} lamports from {} to {}",
+            lamports,
+            source.key,
+            target.key
+        );
+
+        invoke_unchecked(
+            &system_instruction::transfer(source.key, target.key, lamports),
+            &[source.info.clone(), target.clone(), self.0.clone()],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn transfer_from_treasury(
+        &self,
+        source: &Treasury<'a>,
+        target: &AccountInfo<'a>,
+        lamports: u64,
+    ) -> Result<()> {
+        crate::debug_print!(
+            "system transfer {} lamports from treasury {} to {}",
+            lamports,
+            source.key,
+            target.key
+        );
+
+        let seeds: &[&[u8]] = &[
+            crate::config::TREASURY_POOL_SEED.as_bytes(),
+            &source.index().to_le_bytes(),
+            &[source.bump_seed()],
+        ];
+
+        invoke_signed_unchecked(
+            &system_instruction::transfer(source.key, target.key, lamports),
+            &[source.info.clone(), target.clone(), self.0.clone()],
+            &[seeds],
+        )?;
+
+        Ok(())
+    }
+}
+
+impl<'a> Deref for System<'a> {
+    type Target = AccountInfo<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+pub struct Token<'a>(&'a AccountInfo<'a>);
+
+impl<'a> Token<'a> {
+    pub fn from_account(info: &'a AccountInfo<'a>) -> Result<Self> {
+        if !spl_token::check_id(info.key) {
+            return Err(Error::AccountInvalidKey(*info.key, spl_token::ID));
+        }
+
+        Ok(Self(info))
+    }
+
+    pub fn create_account(
+        &self,
+        account: &AccountInfo<'a>,
+        mint: &AccountInfo<'a>,
+        owner: &AccountInfo<'a>,
+    ) -> Result<()> {
+        invoke_unchecked(
+            &spl_token::instruction::initialize_account3(
+                self.0.key,
+                account.key,
+                mint.key,
+                owner.key,
+            )?,
+            &[account.clone(), mint.clone()],
+        )?;
+
+        Ok(())
+    }
+}
+
+impl<'a> Deref for Token<'a> {
+    type Target = AccountInfo<'a>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}

@@ -1,0 +1,18 @@
+[package]
+name = "evm-loader-macro"
+version = "1.0.0"
+edition = "2021"
+description = "Neon EVM loader"
+authors = ["NeonLabs Maintainers <maintainers@neonlabs.org>"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = {version = "2", features = ["full"] }
+proc-macro2 = "1"
+quote = "1"
+itertools = "0.13"
+bs58 = "0.5"
+serde = { version = "1.0", features = [ "derive" ] }
+toml = "0.8"
