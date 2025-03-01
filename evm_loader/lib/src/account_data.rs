@@ -1,53 +1,27 @@
-use std::fmt;
-
-use solana_sdk::account_info::IntoAccountInfo;
-use solana_sdk::entrypoint::MAX_PERMITTED_DATA_INCREASE;
+pub use evm_loader::account_storage::{AccountStorage, SyncedAccountStorage};
+// use solana_sdk::account::{ReadableAccount, WritableAccount};
 use solana_sdk::system_program;
+// use solana_sdk::clock::Epoch;
 use solana_sdk::{
     account::{Account, ReadableAccount},
     account_info::AccountInfo,
     pubkey::Pubkey,
 };
 
-pub use evm_loader::account_storage::{AccountStorage, SyncedAccountStorage};
-use evm_loader::solana_program::debug_account_data::debug_account_data;
-use serde::{Deserialize, Serialize};
-use serde_with::hex::Hex;
-use serde_with::serde_as;
-
-#[allow(clippy::unsafe_derive_deserialize)]
-#[serde_as]
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug)]
 #[repr(C)]
 pub struct AccountData {
     original_length: u32,
     pub pubkey: Pubkey,
     pub lamports: u64,
-    #[serde_as(as = "Hex")]
     data: Vec<u8>,
     pub owner: Pubkey,
     pub executable: bool,
     pub rent_epoch: u64,
 }
 
-impl fmt::Debug for AccountData {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut debug_struct = f.debug_struct("AccountData");
-
-        debug_struct
-            .field("original_length", &self.original_length)
-            .field("pubkey", &bs58::encode(&self.pubkey).into_string())
-            .field("lamports", &self.lamports)
-            .field("owner", &bs58::encode(&self.owner).into_string())
-            .field("executable", &self.executable)
-            .field("rent_epoch", &self.rent_epoch)
-            .field("data_len", &self.data.len());
-
-        debug_account_data(&self.data, &mut debug_struct);
-
-        debug_struct.finish()
-    }
-}
+use solana_sdk::account_info::IntoAccountInfo;
+use solana_sdk::entrypoint::MAX_PERMITTED_DATA_INCREASE;
 
 impl AccountData {
     #[must_use]
@@ -183,9 +157,8 @@ impl<'a> From<&'a AccountData> for Account {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
     use super::*;
+    use std::str::FromStr;
 
     #[tokio::test]
     async fn test_account_data() {

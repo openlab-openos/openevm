@@ -4,20 +4,17 @@ use solana_program::pubkey::Pubkey;
 use solana_program::rent::Rent;
 use std::cell::{Ref, RefMut};
 
-pub use crate::{account_storage::FAKE_OPERATOR, config::ACCOUNT_SEED_VERSION};
+pub use crate::config::ACCOUNT_SEED_VERSION;
 
 pub use ether_balance::{BalanceAccount, Header as BalanceHeader};
 pub use ether_contract::{AllocateResult, ContractAccount, Header as ContractHeader};
-pub use ether_storage::{Cell, Header as StorageCellHeader, StorageCell, StorageCellAddress};
+pub use ether_storage::{Header as StorageCellHeader, StorageCell, StorageCellAddress};
 pub use holder::{Header as HolderHeader, Holder};
+pub use incinerator::Incinerator;
 pub use operator::Operator;
 pub use operator_balance::{OperatorBalanceAccount, OperatorBalanceValidator};
-pub use state::{AccountsStatus, InterruptedInstruction, InterruptedState, StateAccount};
+pub use state::{AccountsStatus, StateAccount};
 pub use state_finalized::{Header as StateFinalizedHeader, StateFinalizedAccount};
-pub use transaction_tree::{
-    NodeInitializer, Status as TransactionTreeNodeStatus, TransactionTree, TreeInitializer,
-    NO_CHILD_TRANSACTION,
-};
 pub use treasury::{MainTreasury, Treasury};
 
 use self::program::System;
@@ -26,6 +23,7 @@ mod ether_balance;
 mod ether_contract;
 mod ether_storage;
 mod holder;
+mod incinerator;
 pub mod legacy;
 mod operator;
 mod operator_balance;
@@ -33,23 +31,17 @@ pub mod program;
 mod state;
 mod state_finalized;
 pub mod token;
-mod transaction_tree;
 mod treasury;
 
-pub const HEAP_OFFSET_PTR: usize = holder::HEAP_OFFSET_OFFSET;
-
 pub const TAG_EMPTY: u8 = 0;
-pub const TAG_STATE: u8 = 25;
+pub const TAG_STATE: u8 = 24;
 pub const TAG_STATE_FINALIZED: u8 = 32;
-pub const TAG_SCHEDULED_STATE_FINALIZED: u8 = 35;
-pub const TAG_SCHEDULED_STATE_CANCELLED: u8 = 38;
 pub const TAG_HOLDER: u8 = 52;
 
 pub const TAG_ACCOUNT_BALANCE: u8 = 60;
 pub const TAG_ACCOUNT_CONTRACT: u8 = 70;
 pub const TAG_OPERATOR_BALANCE: u8 = 80;
 pub const TAG_STORAGE_CELL: u8 = 43;
-pub const TAG_TRANSACTION_TREE: u8 = 90;
 
 const TAG_OFFSET: usize = 0;
 const HEADER_VERSION_OFFSET: usize = 1;
@@ -196,21 +188,6 @@ pub unsafe fn delete(account: &AccountInfo, operator: &Operator) {
     data.fill(0);
 }
 
-/// # Safety
-/// *Permanently delete all data* in the account. Transfer lamports to the treasury.
-pub unsafe fn delete_with_treasury(account: &AccountInfo, treasury: &Treasury) -> Result<()> {
-    debug_print!("DELETE ACCOUNT {}", account.key);
-
-    **treasury.lamports.borrow_mut() += account.lamports();
-    **account.lamports.borrow_mut() = 0;
-
-    account.data.borrow_mut().fill(0);
-    account.realloc(0, false)?;
-    account.assign(&solana_program::system_program::ID);
-
-    Ok(())
-}
-
 pub struct AccountsDB<'a> {
     sorted_accounts: Vec<AccountInfo<'a>>,
     operator: Operator<'a>,
@@ -252,7 +229,7 @@ impl<'a> AccountsDB<'a> {
             return system;
         }
 
-        panic_with_error!(Error::AccountMissing(solana_program::system_program::ID));
+        panic!("System Account must be present in the transaction");
     }
 
     #[must_use]
@@ -261,7 +238,7 @@ impl<'a> AccountsDB<'a> {
             return treasury;
         }
 
-        panic_with_error!(Error::TreasuryMissing);
+        panic!("Treasury Account must be present in the transaction");
     }
 
     #[must_use]
@@ -275,7 +252,7 @@ impl<'a> AccountsDB<'a> {
             return operator_balance.clone();
         }
 
-        panic_with_error!(Error::OperatorBalanceMissing);
+        panic!("Operator Balance Account must be present in the transaction");
     }
 
     #[must_use]
@@ -295,20 +272,16 @@ impl<'a> AccountsDB<'a> {
 
     #[must_use]
     pub fn get(&self, pubkey: &Pubkey) -> &AccountInfo<'a> {
-        if pubkey == &FAKE_OPERATOR || pubkey == self.operator.key {
-            return self.operator_info();
-        }
         let index = self
             .sorted_accounts
             .binary_search_by_key(&pubkey, |a| a.key)
-            .unwrap_or_else(|_| panic_with_error!(Error::AccountMissing(*pubkey)));
+            .unwrap_or_else(|_| panic!("address {pubkey} must be present in the transaction"));
 
         // We just got an 'index' from the binary_search over this vector.
         unsafe { self.sorted_accounts.get_unchecked(index) }
     }
 }
 
-#[allow(clippy::into_iter_without_iter)]
 impl<'a, 'r> IntoIterator for &'r AccountsDB<'a> {
     type Item = &'r AccountInfo<'a>;
     type IntoIter = std::slice::Iter<'r, AccountInfo<'a>>;

@@ -2,10 +2,10 @@ use build_info::chrono::{DateTime, Utc};
 use build_info::semver::Version;
 use build_info::VersionControl::Git;
 use build_info::{BuildInfo, OptimizationLevel};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::fmt::{Display, Formatter};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SlimBuildInfo {
     timestamp: DateTime<Utc>,
     profile: String,
@@ -15,18 +15,18 @@ pub struct SlimBuildInfo {
     version_control: GitInfo,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 struct CrateInfo {
     name: String,
     version: Version,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 struct CompilerInfo {
     version: Version,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize)]
 struct GitInfo {
     commit_id: String,
     dirty: bool,

@@ -15,7 +15,7 @@ solana_program::declare_id!(crate::config::PROGRAM_ID);
 
 mod allocator;
 #[macro_use]
-pub mod debug;
+mod debug;
 #[macro_use]
 pub mod error;
 pub mod account;
@@ -29,7 +29,6 @@ pub mod external_programs;
 pub mod gasometer;
 #[cfg(target_os = "solana")]
 pub mod instruction;
-#[macro_use]
 pub mod types;
 
 // Export current solana-sdk types for downstream users who may also be building with a different

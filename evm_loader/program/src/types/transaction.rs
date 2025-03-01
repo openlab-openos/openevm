@@ -1,28 +1,22 @@
 use ethnum::U256;
 use maybe_async::maybe_async;
-use rlp::{DecoderError, Rlp};
 use serde::{Deserialize, Serialize};
-use solana_program::instruction::{get_stack_height, TRANSACTION_LEVEL_STACK_HEIGHT};
 use std::convert::TryInto;
 
-use crate::account::TransactionTree;
-use crate::types::vector::VectorVecExt;
 use crate::{
-    account_storage::AccountStorage, config::GAS_LIMIT_MULTIPLIER_NO_CHAINID, error::Error, vector,
+    account_storage::AccountStorage, config::GAS_LIMIT_MULTIPLIER_NO_CHAINID, error::Error,
 };
 
-use super::vector::VectorSliceExt;
-use super::{Address, Vector};
-
-use super::read_raw_utils::ReconstructRaw;
-use crate::types::read_raw_utils::read_vec;
-use evm_loader_macro::ReconstructRaw;
+use super::{
+    serde::{bytes_32, option_u256},
+    Address,
+};
 
 #[repr(transparent)]
 #[derive(
     Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default, Serialize, Deserialize,
 )]
-pub struct StorageKey([u8; 32]);
+pub struct StorageKey(#[serde(with = "bytes_32")] [u8; 32]);
 
 impl rlp::Decodable for StorageKey {
     fn decode(rlp: &rlp::Rlp) -> Result<Self, rlp::DecoderError> {
@@ -58,12 +52,11 @@ impl AsRef<[u8]> for StorageKey {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum TransactionEnvelope {
     Legacy,
     AccessList,
     DynamicFee,
-    Scheduled,
 }
 
 impl TransactionEnvelope {
@@ -77,32 +70,31 @@ impl TransactionEnvelope {
                 0x00 => (Some(TransactionEnvelope::Legacy), &bytes[1..]),
                 0x01 => (Some(TransactionEnvelope::AccessList), &bytes[1..]),
                 0x02 => (Some(TransactionEnvelope::DynamicFee), &bytes[1..]),
-                0x7f => {
-                    let subtype = bytes[1];
-                    if subtype == 0x01 {
-                        (Some(TransactionEnvelope::Scheduled), &bytes[2..])
-                    } else {
-                        panic_with_error!(Error::UnsuppotedNeonTransactionType(subtype))
-                    }
-                }
-                byte => panic_with_error!(Error::UnsuppotedEthereumTransactionType(byte)),
+                byte => panic!("Unsupported EIP-2718 Transaction type | First byte: {byte}"),
             }
         }
     }
 }
 
-#[derive(Debug, ReconstructRaw)]
-#[repr(C)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct LegacyTx {
     pub nonce: u64,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub gas_price: U256,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub gas_limit: U256,
     pub target: Option<Address>,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub value: U256,
-    pub call_data: Vector<u8>,
+    #[serde(with = "serde_bytes")]
+    pub call_data: Vec<u8>,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub v: U256,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub r: U256,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub s: U256,
+    #[serde(with = "option_u256")]
     pub chain_id: Option<U256>,
     pub recovery_id: u8,
 }
@@ -121,9 +113,20 @@ impl rlp::Decodable for LegacyTx {
         let nonce: u64 = rlp.val_at(0)?;
         let gas_price: U256 = u256(&rlp.at(1)?)?;
         let gas_limit: U256 = u256(&rlp.at(2)?)?;
-        let target: Option<Address> = decode_optional_address(&rlp.at(3)?)?;
+        let target: Option<Address> = {
+            let target = rlp.at(3)?;
+            if target.is_empty() {
+                if target.is_data() {
+                    None
+                } else {
+                    return Err(rlp::DecoderError::RlpExpectedToBeData);
+                }
+            } else {
+                Some(target.as_val()?)
+            }
+        };
         let value: U256 = u256(&rlp.at(4)?)?;
-        let call_data = decode_byte_vector(&rlp.at(5)?)?;
+        let call_data = rlp.val_at(5)?;
         let v: U256 = u256(&rlp.at(6)?)?;
         let r: U256 = u256(&rlp.at(7)?)?;
         let s: U256 = u256(&rlp.at(8)?)?;
@@ -162,20 +165,26 @@ impl rlp::Decodable for LegacyTx {
     }
 }
 
-#[derive(Debug, ReconstructRaw)]
-#[repr(C)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct AccessListTx {
     pub nonce: u64,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub gas_price: U256,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub gas_limit: U256,
     pub target: Option<Address>,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub value: U256,
-    pub call_data: Vector<u8>,
+    #[serde(with = "serde_bytes")]
+    pub call_data: Vec<u8>,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub r: U256,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub s: U256,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub chain_id: U256,
     pub recovery_id: u8,
-    pub access_list: Vector<(Address, Vector<StorageKey>)>,
+    pub access_list: Vec<(Address, Vec<StorageKey>)>,
 }
 
 impl rlp::Decodable for AccessListTx {
@@ -193,13 +202,24 @@ impl rlp::Decodable for AccessListTx {
         let nonce: u64 = rlp.val_at(1)?;
         let gas_price: U256 = u256(&rlp.at(2)?)?;
         let gas_limit: U256 = u256(&rlp.at(3)?)?;
-        let target: Option<Address> = decode_optional_address(&rlp.at(4)?)?;
+        let target: Option<Address> = {
+            let target = rlp.at(4)?;
+            if target.is_empty() {
+                if target.is_data() {
+                    None
+                } else {
+                    return Err(rlp::DecoderError::RlpExpectedToBeData);
+                }
+            } else {
+                Some(target.as_val()?)
+            }
+        };
 
         let value: U256 = u256(&rlp.at(5)?)?;
-        let call_data = decode_byte_vector(&rlp.at(6)?)?;
+        let call_data = rlp.val_at(6)?;
 
         let rlp_access_list = rlp.at(7)?;
-        let mut access_list = vector![];
+        let mut access_list = vec![];
 
         for entry in &rlp_access_list {
             // Check if entry is a list
@@ -208,7 +228,7 @@ impl rlp::Decodable for AccessListTx {
                 let address: Address = entry.at(0)?.as_val()?;
 
                 // Get storage keys from second element
-                let mut storage_keys: Vector<StorageKey> = vector![];
+                let mut storage_keys: Vec<StorageKey> = vec![];
 
                 for key in &entry.at(1)? {
                     storage_keys.push(key.as_val()?);
@@ -246,361 +266,57 @@ impl rlp::Decodable for AccessListTx {
     }
 }
 
-#[derive(Debug, ReconstructRaw)]
-#[repr(C)]
-pub struct DynamicFeeTx {
-    pub nonce: u64,
-    pub max_priority_fee_per_gas: U256,
-    pub max_fee_per_gas: U256,
-    pub gas_limit: U256,
-    pub target: Option<Address>,
-    pub value: U256,
-    pub call_data: Vector<u8>,
-    pub r: U256,
-    pub s: U256,
-    pub chain_id: U256,
-    pub recovery_id: u8,
-    pub access_list: Vector<(Address, Vector<StorageKey>)>,
-}
+// TODO: Will be added as a part of EIP-1559
+// struct DynamicFeeTx {}
 
-impl rlp::Decodable for DynamicFeeTx {
-    fn decode(rlp: &rlp::Rlp) -> Result<Self, rlp::DecoderError> {
-        let rlp_len = {
-            let info = rlp.payload_info()?;
-            info.header_len + info.value_len
-        };
-
-        if rlp.as_raw().len() != rlp_len {
-            return Err(rlp::DecoderError::RlpInconsistentLengthAndData);
-        }
-
-        let chain_id: U256 = u256(&rlp.at(0)?)?;
-        let nonce: u64 = rlp.val_at(1)?;
-
-        let max_priority_fee_per_gas: U256 = u256(&rlp.at(2)?)?;
-        let max_fee_per_gas: U256 = u256(&rlp.at(3)?)?;
-        if max_fee_per_gas < max_priority_fee_per_gas {
-            return Err(rlp::DecoderError::Custom(
-                "max_fee_per_gas < max_priority_fee_per_gas",
-            ));
-        }
-
-        let gas_limit: U256 = u256(&rlp.at(4)?)?;
-        let target: Option<Address> = decode_optional_address(&rlp.at(5)?)?;
-
-        let value: U256 = u256(&rlp.at(6)?)?;
-        let call_data = decode_byte_vector(&rlp.at(7)?)?;
-
-        let rlp_access_list = rlp.at(8)?;
-        let mut access_list = vector![];
-
-        for entry in &rlp_access_list {
-            // Check if entry is a list
-            if entry.is_list() {
-                // Parse address from first element
-                let address: Address = entry.at(0)?.as_val()?;
-
-                // Get storage keys from second element
-                let mut storage_keys: Vector<StorageKey> = vector![];
-
-                for key in &entry.at(1)? {
-                    storage_keys.push(key.as_val()?);
-                }
-
-                access_list.push((address, storage_keys));
-            } else {
-                return Err(rlp::DecoderError::RlpExpectedToBeList);
-            }
-        }
-
-        let y_parity: u8 = rlp.at(9)?.as_val()?;
-        let r: U256 = u256(&rlp.at(10)?)?;
-        let s: U256 = u256(&rlp.at(11)?)?;
-
-        if rlp.at(12).is_ok() {
-            return Err(rlp::DecoderError::RlpIncorrectListLen);
-        }
-
-        let tx = DynamicFeeTx {
-            nonce,
-            max_priority_fee_per_gas,
-            max_fee_per_gas,
-            gas_limit,
-            target,
-            value,
-            call_data,
-            r,
-            s,
-            chain_id,
-            recovery_id: y_parity,
-            access_list,
-        };
-
-        Ok(tx)
-    }
-}
-
-/// A "shell" representation of `ScheduledTx` without the persistent Vectors.
-/// Intended for use in cases when there's no heap account.
-/// TODO: rework the whole transaction to be able to use `ScheduledTx` when account heap is absent.
-#[derive(Debug)]
-#[repr(C)]
-pub struct ScheduledTxShell {
-    pub payer: Address,
-    pub sender: Option<Address>,
-    pub nonce: u64,
-    pub index: u16,
-    pub intent: Option<Address>,
-    pub target: Option<Address>,
-    pub value: U256,
-    pub chain_id: U256,
-    pub gas_limit: U256,
-    pub max_fee_per_gas: U256,
-    pub max_priority_fee_per_gas: U256,
-    pub hash: [u8; 32],
-}
-
-impl ScheduledTxShell {
-    pub fn from_rlp(message: &[u8]) -> crate::error::Result<Self> {
-        use solana_program::keccak::hashv;
-
-        let (tx_type, tx_body) = TransactionEnvelope::get_type(message);
-        tx_type
-            .map(|f| f == TransactionEnvelope::Scheduled)
-            .ok_or(crate::error::Error::TreeAccountTxInvalidType)?;
-
-        let rlp = rlp::Rlp::new(tx_body);
-        let hash = hashv(&[&[0x7f, 0x01], tx_body]).to_bytes();
-        ScheduledTxShell::decode(&rlp, hash).map_err(Error::from)
-    }
-
-    fn decode(rlp: &rlp::Rlp, hash: [u8; 32]) -> Result<Self, rlp::DecoderError> {
-        let rlp_len = {
-            let info = rlp.payload_info()?;
-            info.header_len + info.value_len
-        };
-
-        if rlp.as_raw().len() != rlp_len {
-            return Err(rlp::DecoderError::RlpInconsistentLengthAndData);
-        }
-
-        let payer: Address = rlp.at(0)?.as_val()?;
-        let sender: Option<Address> = decode_optional_address(&rlp.at(1)?)?;
-
-        let nonce: u64 = rlp.val_at(2)?;
-        let index: u16 = rlp.val_at(3)?;
-
-        let intent: Option<Address> = decode_optional_address(&rlp.at(4)?)?;
-        // index 5 is skipped (intent_call_data).
-        let target: Option<Address> = decode_optional_address(&rlp.at(6)?)?;
-        // index 7 is skipped (call_data).
-
-        let value: U256 = u256(&rlp.at(8)?)?;
-        let chain_id: U256 = u256(&rlp.at(9)?)?;
-
-        let gas_limit: U256 = u256(&rlp.at(10)?)?;
-        let max_fee_per_gas: U256 = u256(&rlp.at(11)?)?;
-        let max_priority_fee_per_gas: U256 = u256(&rlp.at(12)?)?;
-
-        if max_fee_per_gas < max_priority_fee_per_gas {
-            return Err(rlp::DecoderError::Custom(
-                "max_fee_per_gas < max_priority_fee_per_gas",
-            ));
-        }
-
-        if rlp.at(13).is_ok() {
-            return Err(rlp::DecoderError::RlpIncorrectListLen);
-        }
-
-        let tx = ScheduledTxShell {
-            payer,
-            sender,
-            nonce,
-            index,
-            intent,
-            target,
-            value,
-            chain_id,
-            gas_limit,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-            hash,
-        };
-
-        Ok(tx)
-    }
-}
-
-#[derive(Debug, ReconstructRaw)]
-#[repr(C)]
-pub struct ScheduledTx {
-    pub payer: Address,
-    pub sender: Option<Address>,
-    pub nonce: u64,
-    pub index: u16,
-    pub intent: Option<Address>,
-    pub intent_call_data: Vector<u8>,
-    pub target: Option<Address>,
-    pub call_data: Vector<u8>,
-    pub value: U256,
-    pub chain_id: U256,
-    pub gas_limit: U256,
-    pub max_fee_per_gas: U256,
-    pub max_priority_fee_per_gas: U256,
-}
-
-// TODO remove if unused in the end. Possibly, the Transaction::hash() can be used instead.
-impl ScheduledTx {
-    #[must_use]
-    pub fn hash(&self) -> [u8; 32] {
-        use solana_program::keccak::hashv;
-
-        let rlp = rlp::encode(self);
-        hashv(&[&[0x7f, 0x01], &rlp]).to_bytes()
-    }
-}
-
-impl rlp::Encodable for ScheduledTx {
-    fn rlp_append(&self, stream: &mut rlp::RlpStream) {
-        // Only the body, tx_type is omitted (as in the decode).
-        stream.begin_list(13);
-        stream.append(&self.payer);
-        stream.append(&self.sender);
-        stream.append(&self.nonce);
-        stream.append(&self.index);
-        stream.append(&self.intent);
-        stream.append(&self.intent_call_data.as_slice());
-        stream.append(&self.target);
-        stream.append(&self.call_data.as_slice());
-        stream.append(&self.value.to_be_bytes().as_slice());
-        stream.append(&self.chain_id.to_be_bytes().as_slice());
-        stream.append(&self.gas_limit.to_be_bytes().as_slice());
-        stream.append(&self.max_fee_per_gas.to_be_bytes().as_slice());
-        stream.append(&self.max_priority_fee_per_gas.to_be_bytes().as_slice());
-    }
-}
-
-impl rlp::Decodable for ScheduledTx {
-    fn decode(rlp: &rlp::Rlp) -> Result<Self, rlp::DecoderError> {
-        let rlp_len = {
-            let info = rlp.payload_info()?;
-            info.header_len + info.value_len
-        };
-
-        if rlp.as_raw().len() != rlp_len {
-            return Err(rlp::DecoderError::RlpInconsistentLengthAndData);
-        }
-
-        let payer: Address = rlp.at(0)?.as_val()?;
-        let sender: Option<Address> = decode_optional_address(&rlp.at(1)?)?;
-
-        let nonce: u64 = rlp.val_at(2)?;
-        let index: u16 = rlp.val_at(3)?;
-
-        let intent: Option<Address> = decode_optional_address(&rlp.at(4)?)?;
-        let intent_call_data: Vector<u8> = decode_byte_vector(&rlp.at(5)?)?;
-
-        let target: Option<Address> = decode_optional_address(&rlp.at(6)?)?;
-        let call_data = decode_byte_vector(&rlp.at(7)?)?;
-
-        let value: U256 = u256(&rlp.at(8)?)?;
-        let chain_id: U256 = u256(&rlp.at(9)?)?;
-
-        let gas_limit: U256 = u256(&rlp.at(10)?)?;
-        let max_fee_per_gas: U256 = u256(&rlp.at(11)?)?;
-        let max_priority_fee_per_gas: U256 = u256(&rlp.at(12)?)?;
-
-        if max_fee_per_gas < max_priority_fee_per_gas {
-            return Err(rlp::DecoderError::Custom(
-                "max_fee_per_gas < max_priority_fee_per_gas",
-            ));
-        }
-
-        if rlp.at(13).is_ok() {
-            return Err(rlp::DecoderError::RlpIncorrectListLen);
-        }
-
-        let tx = ScheduledTx {
-            payer,
-            sender,
-            nonce,
-            index,
-            intent,
-            intent_call_data,
-            target,
-            call_data,
-            value,
-            chain_id,
-            gas_limit,
-            max_fee_per_gas,
-            max_priority_fee_per_gas,
-        };
-
-        Ok(tx)
-    }
-}
-
-#[derive(Debug)]
-#[repr(C, u8)]
+#[derive(Debug, Serialize, Deserialize)]
 pub enum TransactionPayload {
     Legacy(LegacyTx),
     AccessList(AccessListTx),
-    DynamicFee(DynamicFeeTx),
-    Scheduled(ScheduledTx),
 }
 
-#[derive(Debug)]
-#[repr(C)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Transaction {
     pub transaction: TransactionPayload,
     pub byte_len: usize,
+    #[serde(with = "bytes_32")]
     pub hash: [u8; 32],
+    #[serde(with = "bytes_32")]
     pub signed_hash: [u8; 32],
 }
 
 impl Transaction {
-    fn from_payload(
+    pub fn from_payload(
         transaction_type: &Option<TransactionEnvelope>,
         chain_id: Option<U256>,
         transaction_rlp: &rlp::Rlp,
         transaction: TransactionPayload,
     ) -> Result<Self, rlp::DecoderError> {
-        use solana_program::keccak::{hash, hashv, Hash};
-
         let (hash, signed_hash) = match *transaction_type {
-            // Legacy transaction wrapped in envelope
+            // Legacy transaction wrapped in envelop
             Some(TransactionEnvelope::Legacy) => {
-                let Hash(hash) = hashv(&[&[0x00], transaction_rlp.as_raw()]);
+                let hash =
+                    solana_program::keccak::hashv(&[&[0x00], transaction_rlp.as_raw()]).to_bytes();
                 let signed_hash = Self::calculate_legacy_signature(transaction_rlp, chain_id)?;
 
                 (hash, signed_hash)
             }
             // Access List transaction
             Some(TransactionEnvelope::AccessList) => {
-                let Hash(hash) = hashv(&[&[0x01], transaction_rlp.as_raw()]);
+                let hash =
+                    solana_program::keccak::hashv(&[&[0x01], transaction_rlp.as_raw()]).to_bytes();
                 let signed_hash = Self::eip2718_signed_hash(&[0x01], transaction_rlp, 8)?;
 
                 (hash, signed_hash)
             }
-            // Dynamic Fee transaction
-            Some(TransactionEnvelope::DynamicFee) => {
-                let Hash(hash) = hashv(&[&[0x02], transaction_rlp.as_raw()]);
-                let signed_hash = Self::eip2718_signed_hash(&[0x02], transaction_rlp, 9)?;
-
-                (hash, signed_hash)
-            }
-            // Scheduled transaction
-            Some(TransactionEnvelope::Scheduled) => {
-                let Hash(hash) = hashv(&[&[0x7f, 0x01], transaction_rlp.as_raw()]);
-                (hash, [0_u8; 32])
-            }
             // Legacy trasaction
             None => {
-                let Hash(hash) = hash(transaction_rlp.as_raw());
+                let hash = solana_program::keccak::hash(transaction_rlp.as_raw()).to_bytes();
                 let signed_hash = Self::calculate_legacy_signature(transaction_rlp, chain_id)?;
 
                 (hash, signed_hash)
             }
+            _ => unimplemented!(),
         };
 
         let info = transaction_rlp.payload_info()?;
@@ -608,13 +324,8 @@ impl Transaction {
             // Legacy transaction
             info.header_len + info.value_len
         } else {
-            let subtype_present = match transaction_type.as_ref().unwrap() {
-                TransactionEnvelope::Scheduled => 1,
-                _ => 0,
-            };
-
             // Transaction in the type envelope
-            info.header_len + info.value_len + 1 + subtype_present // + 1 byte for type + 1 byte if subtype is used.
+            info.header_len + info.value_len + 1 // + 1 byte for type
         };
 
         Ok(Transaction {
@@ -730,33 +441,6 @@ impl Transaction {
 }
 
 impl Transaction {
-    pub fn scheduled_from_rlp(transaction: &[u8]) -> Result<Self, Error> {
-        let (transaction_type, transaction) = TransactionEnvelope::get_type(transaction);
-
-        let tx = match transaction_type {
-            Some(TransactionEnvelope::Scheduled) => {
-                let scheduled_tx = rlp::decode::<ScheduledTx>(transaction).map_err(Error::from)?;
-                let chain_id = scheduled_tx.chain_id;
-                let tx = TransactionPayload::Scheduled(scheduled_tx);
-                Transaction::from_payload(
-                    &Some(TransactionEnvelope::Scheduled),
-                    Some(chain_id),
-                    &rlp::Rlp::new(transaction),
-                    tx,
-                )?
-            }
-            _ => {
-                // Forbid constructing classic Eth transactions via code-path dedicated for scheduled txns.
-                // Use `scheduled_from_rlp` instead.
-                // N.B. Panic instead of error- usage would indicate a bug in the caller's code
-                // (e.g. Neon Proxy) rather than an error.
-                panic_with_error!(Error::NotScheduledTransaction);
-            }
-        };
-
-        Ok(tx)
-    }
-
     pub fn from_rlp(transaction: &[u8]) -> Result<Self, Error> {
         let (transaction_type, transaction) = TransactionEnvelope::get_type(transaction);
 
@@ -784,31 +468,13 @@ impl Transaction {
                     tx,
                 )?
             }
-            Some(TransactionEnvelope::DynamicFee) => {
-                let dynamic_fee_tx =
-                    rlp::decode::<DynamicFeeTx>(transaction).map_err(Error::from)?;
-                let chain_id = dynamic_fee_tx.chain_id;
-                let tx = TransactionPayload::DynamicFee(dynamic_fee_tx);
-                Transaction::from_payload(
-                    &Some(TransactionEnvelope::DynamicFee),
-                    Some(chain_id),
-                    &rlp::Rlp::new(transaction),
-                    tx,
-                )?
-            }
-            Some(TransactionEnvelope::Scheduled) => {
-                // Forbid constructing ScheduledTx via `from_rlp`, so it doesn't interfere with the "classic"
-                // Neon instructions and native Eth transactions.
-                // Use `scheduled_from_rlp` instead.
-                // N.B. Panic, instead of error, because usage would indicate a bug rather than an error.
-                panic_with_error!(Error::NotClassicTransaction);
-            }
             None => {
                 let legacy_tx = rlp::decode::<LegacyTx>(transaction).map_err(Error::from)?;
                 let chain_id = legacy_tx.chain_id;
                 let tx = TransactionPayload::Legacy(legacy_tx);
                 Transaction::from_payload(&None, chain_id, &rlp::Rlp::new(transaction), tx)?
             }
+            Some(TransactionEnvelope::DynamicFee) => unimplemented!(),
         };
 
         Ok(tx)
@@ -831,9 +497,7 @@ impl Transaction {
     pub fn nonce(&self) -> u64 {
         match self.transaction {
             TransactionPayload::Legacy(LegacyTx { nonce, .. })
-            | TransactionPayload::AccessList(AccessListTx { nonce, .. })
-            | TransactionPayload::DynamicFee(DynamicFeeTx { nonce, .. })
-            | TransactionPayload::Scheduled(ScheduledTx { nonce, .. }) => nonce,
+            | TransactionPayload::AccessList(AccessListTx { nonce, .. }) => nonce,
         }
     }
 
@@ -842,25 +506,6 @@ impl Transaction {
         match self.transaction {
             TransactionPayload::Legacy(LegacyTx { gas_price, .. })
             | TransactionPayload::AccessList(AccessListTx { gas_price, .. }) => gas_price,
-            TransactionPayload::DynamicFee(DynamicFeeTx {
-                max_priority_fee_per_gas,
-                max_fee_per_gas,
-                ..
-            })
-            | TransactionPayload::Scheduled(ScheduledTx {
-                max_priority_fee_per_gas,
-                max_fee_per_gas,
-                ..
-            }) => {
-                // If a priority fee is defined, use it to pay the operator the base cost
-                //  for details see priority_fee_txn_calculator.rs
-                if max_priority_fee_per_gas == U256::ZERO {
-                    // if there is no priority fee, use the whole max-fee-per-gas
-                    max_fee_per_gas
-                } else {
-                    max_priority_fee_per_gas
-                }
-            }
         }
     }
 
@@ -868,9 +513,7 @@ impl Transaction {
     pub fn gas_limit(&self) -> U256 {
         match self.transaction {
             TransactionPayload::Legacy(LegacyTx { gas_limit, .. })
-            | TransactionPayload::AccessList(AccessListTx { gas_limit, .. })
-            | TransactionPayload::DynamicFee(DynamicFeeTx { gas_limit, .. })
-            | TransactionPayload::Scheduled(ScheduledTx { gas_limit, .. }) => gas_limit,
+            | TransactionPayload::AccessList(AccessListTx { gas_limit, .. }) => gas_limit,
         }
     }
 
@@ -880,30 +523,11 @@ impl Transaction {
             .ok_or(Error::IntegerOverflow)
     }
 
-    pub fn priority_fee_limit_in_tokens(&self) -> Result<U256, Error> {
-        self.base_fee_per_gas()
-            .unwrap_or_default()
-            .checked_mul(self.gas_limit())
-            .ok_or(Error::IntegerOverflow)
-    }
-
-    #[must_use]
-    pub fn payer(&self, origin: Address) -> Address {
-        match self.transaction {
-            TransactionPayload::Legacy(_)
-            | TransactionPayload::AccessList(_)
-            | TransactionPayload::DynamicFee(_) => origin,
-            TransactionPayload::Scheduled(ScheduledTx { payer, .. }) => payer,
-        }
-    }
-
     #[must_use]
     pub fn target(&self) -> Option<Address> {
         match self.transaction {
             TransactionPayload::Legacy(LegacyTx { target, .. })
-            | TransactionPayload::AccessList(AccessListTx { target, .. })
-            | TransactionPayload::DynamicFee(DynamicFeeTx { target, .. })
-            | TransactionPayload::Scheduled(ScheduledTx { target, .. }) => target,
+            | TransactionPayload::AccessList(AccessListTx { target, .. }) => target,
         }
     }
 
@@ -911,9 +535,7 @@ impl Transaction {
     pub fn value(&self) -> U256 {
         match self.transaction {
             TransactionPayload::Legacy(LegacyTx { value, .. })
-            | TransactionPayload::AccessList(AccessListTx { value, .. })
-            | TransactionPayload::DynamicFee(DynamicFeeTx { value, .. })
-            | TransactionPayload::Scheduled(ScheduledTx { value, .. }) => value,
+            | TransactionPayload::AccessList(AccessListTx { value, .. }) => value,
         }
     }
 
@@ -921,9 +543,7 @@ impl Transaction {
     pub fn call_data(&self) -> &[u8] {
         match &self.transaction {
             TransactionPayload::Legacy(LegacyTx { call_data, .. })
-            | TransactionPayload::AccessList(AccessListTx { call_data, .. })
-            | TransactionPayload::DynamicFee(DynamicFeeTx { call_data, .. })
-            | TransactionPayload::Scheduled(ScheduledTx { call_data, .. }) => call_data,
+            | TransactionPayload::AccessList(AccessListTx { call_data, .. }) => call_data,
         }
     }
 
@@ -931,9 +551,7 @@ impl Transaction {
     pub fn r(&self) -> U256 {
         match self.transaction {
             TransactionPayload::Legacy(LegacyTx { r, .. })
-            | TransactionPayload::AccessList(AccessListTx { r, .. })
-            | TransactionPayload::DynamicFee(DynamicFeeTx { r, .. }) => r,
-            TransactionPayload::Scheduled(_) => unreachable!(),
+            | TransactionPayload::AccessList(AccessListTx { r, .. }) => r,
         }
     }
 
@@ -941,9 +559,7 @@ impl Transaction {
     pub fn s(&self) -> U256 {
         match self.transaction {
             TransactionPayload::Legacy(LegacyTx { s, .. })
-            | TransactionPayload::AccessList(AccessListTx { s, .. })
-            | TransactionPayload::DynamicFee(DynamicFeeTx { s, .. }) => s,
-            TransactionPayload::Scheduled(_) => unreachable!(),
+            | TransactionPayload::AccessList(AccessListTx { s, .. }) => s,
         }
     }
 
@@ -951,9 +567,7 @@ impl Transaction {
     pub fn chain_id(&self) -> Option<u64> {
         match self.transaction {
             TransactionPayload::Legacy(LegacyTx { chain_id, .. }) => chain_id,
-            TransactionPayload::AccessList(AccessListTx { chain_id, .. })
-            | TransactionPayload::DynamicFee(DynamicFeeTx { chain_id, .. })
-            | TransactionPayload::Scheduled(ScheduledTx { chain_id, .. }) => Some(chain_id),
+            TransactionPayload::AccessList(AccessListTx { chain_id, .. }) => Some(chain_id),
         }
         .map(std::convert::TryInto::try_into)
         .transpose()
@@ -964,9 +578,7 @@ impl Transaction {
     pub fn recovery_id(&self) -> u8 {
         match self.transaction {
             TransactionPayload::Legacy(LegacyTx { recovery_id, .. })
-            | TransactionPayload::AccessList(AccessListTx { recovery_id, .. })
-            | TransactionPayload::DynamicFee(DynamicFeeTx { recovery_id, .. }) => recovery_id,
-            TransactionPayload::Scheduled(_) => unreachable!(),
+            | TransactionPayload::AccessList(AccessListTx { recovery_id, .. }) => recovery_id,
         }
     }
 
@@ -986,102 +598,10 @@ impl Transaction {
     }
 
     #[must_use]
-    pub fn tx_type(&self) -> u8 {
-        match self.transaction {
-            TransactionPayload::Legacy(_) => 0,
-            TransactionPayload::AccessList(_) => 1,
-            TransactionPayload::DynamicFee(_) => 2,
-            TransactionPayload::Scheduled(_) => 0x80, // 0x7f (max envelope tx type) + 0x01 (scheduled tx subtype)
-        }
-    }
-
-    #[must_use]
-    pub fn is_scheduled_tx(&self) -> bool {
-        if let TransactionPayload::Scheduled(_) = self.transaction {
-            return true;
-        }
-        false
-    }
-
-    #[must_use]
-    pub fn max_fee_per_gas(&self) -> Option<U256> {
-        match self.transaction {
-            TransactionPayload::Legacy(_) | TransactionPayload::AccessList(_) => None,
-            TransactionPayload::DynamicFee(DynamicFeeTx {
-                max_fee_per_gas, ..
-            })
-            | TransactionPayload::Scheduled(ScheduledTx {
-                max_fee_per_gas, ..
-            }) => Some(max_fee_per_gas),
-        }
-    }
-
-    #[must_use]
-    pub fn max_priority_fee_per_gas(&self) -> Option<U256> {
-        match self.transaction {
-            TransactionPayload::Legacy(_) | TransactionPayload::AccessList(_) => None,
-            TransactionPayload::DynamicFee(DynamicFeeTx {
-                max_priority_fee_per_gas,
-                ..
-            })
-            | TransactionPayload::Scheduled(ScheduledTx {
-                max_priority_fee_per_gas,
-                ..
-            }) => Some(max_priority_fee_per_gas),
-        }
-    }
-
-    #[must_use]
-    pub fn base_fee_per_gas(&self) -> Option<U256> {
-        match self.transaction {
-            TransactionPayload::Legacy(_) | TransactionPayload::AccessList(_) => None,
-            TransactionPayload::DynamicFee(DynamicFeeTx {
-                max_priority_fee_per_gas,
-                max_fee_per_gas,
-                ..
-            })
-            | TransactionPayload::Scheduled(ScheduledTx {
-                max_priority_fee_per_gas,
-                max_fee_per_gas,
-                ..
-            }) => {
-                if max_priority_fee_per_gas == U256::ZERO
-                    || max_fee_per_gas == max_priority_fee_per_gas
-                {
-                    None
-                } else {
-                    Some(max_fee_per_gas.saturating_sub(max_priority_fee_per_gas))
-                }
-            }
-        }
-    }
-
-    #[must_use]
-    pub fn access_list(&self) -> Option<&Vector<(Address, Vector<StorageKey>)>> {
+    pub fn access_list(&self) -> Option<&Vec<(Address, Vec<StorageKey>)>> {
         match &self.transaction {
-            TransactionPayload::AccessList(AccessListTx { access_list, .. })
-            | TransactionPayload::DynamicFee(DynamicFeeTx { access_list, .. }) => Some(access_list),
-            TransactionPayload::Legacy(_) | TransactionPayload::Scheduled(_) => None,
-        }
-    }
-
-    #[must_use]
-    pub fn if_scheduled(&self) -> Option<&ScheduledTx> {
-        match &self.transaction {
-            TransactionPayload::AccessList(_)
-            | TransactionPayload::DynamicFee(_)
-            | TransactionPayload::Legacy(_) => None,
-            TransactionPayload::Scheduled(ref scheduled) => Some(scheduled),
-        }
-    }
-
-    #[must_use]
-    pub fn tree_account_index(&self) -> Option<u16> {
-        match &self.transaction {
-            TransactionPayload::AccessList(_)
-            | TransactionPayload::DynamicFee(_)
-            | TransactionPayload::Legacy(_) => None,
-            TransactionPayload::Scheduled(ScheduledTx { index, .. }) => Some(*index),
+            TransactionPayload::AccessList(AccessListTx { access_list, .. }) => Some(access_list),
+            TransactionPayload::Legacy(_) => None,
         }
     }
 
@@ -1090,8 +610,6 @@ impl Transaction {
 
         match &mut self.transaction {
             TransactionPayload::AccessList(AccessListTx { gas_limit, .. })
-            | TransactionPayload::DynamicFee(DynamicFeeTx { gas_limit, .. })
-            | TransactionPayload::Scheduled(ScheduledTx { gas_limit, .. })
             | TransactionPayload::Legacy(LegacyTx { gas_limit, .. }) => {
                 *gas_limit = gas_limit.saturating_mul(gas_multiplier);
             }
@@ -1103,7 +621,6 @@ impl Transaction {
         &self,
         origin: Address,
         backend: &impl AccountStorage,
-        tree: Option<&TransactionTree<'_>>,
     ) -> Result<(), crate::error::Error> {
         let chain_id = self
             .chain_id()
@@ -1113,54 +630,13 @@ impl Transaction {
             return Err(Error::InvalidChainId(chain_id));
         }
 
-        if tree.is_some() != self.is_scheduled_tx() {
-            return Err(Error::TreeAccountTxInvalidType);
-        }
-
-        // Nonce validation is slightly different for classic and scheduled transactions.
-        //
-        // Classic transactions:
-        // origin's nonce should be equal to txn's nonce because it's validated during
-        // the first iteration and then incremented.
-        //
-        // Scheduled transactions:
-        // payer's nonce (origin) validated only for the first transaction in the tree
         let origin_nonce = backend.nonce(origin, chain_id).await;
-
-        let validate_nonce = tree.map_or(true, TransactionTree::is_not_started);
-        if validate_nonce && (origin_nonce != self.nonce()) {
+        if origin_nonce != self.nonce() {
             let error = Error::InvalidTransactionNonce(origin, origin_nonce, self.nonce());
             return Err(error);
         }
 
-        // The reason to forbid the calls for DynamicFee transactions - priority fee calculation
-        // uses get_processed_sibling_instruction syscall which doesn't work well for CPI.
-        let is_root_transaction = get_stack_height() == TRANSACTION_LEVEL_STACK_HEIGHT;
-        if matches!(self.tx_type(), 2 | 0x80) && !is_root_transaction {
-            return Err(
-                "CPI calls of Neon EVM are forbidden for DynamicFee transaction type.".into(),
-            );
-        }
-
         Ok(())
-    }
-}
-
-#[inline]
-fn decode_byte_vector(rlp: &Rlp) -> Result<Vector<u8>, DecoderError> {
-    rlp.decoder().decode_value(|bytes| Ok(bytes.to_vector()))
-}
-
-#[inline]
-fn decode_optional_address(rlp: &Rlp) -> Result<Option<Address>, DecoderError> {
-    if rlp.is_empty() {
-        if rlp.is_data() {
-            Ok(None)
-        } else {
-            Err(rlp::DecoderError::RlpExpectedToBeData)
-        }
-    } else {
-        Ok(Some(rlp.as_val()?))
     }
 }
 

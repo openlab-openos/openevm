@@ -1,14 +1,13 @@
 use crate::account::legacy::{TAG_HOLDER_DEPRECATED, TAG_STATE_FINALIZED_DEPRECATED};
 use crate::account::{
-    program, AccountsDB, AccountsStatus, Operator, OperatorBalanceAccount,
-    OperatorBalanceValidator, StateAccount, Treasury, TAG_HOLDER, TAG_SCHEDULED_STATE_CANCELLED,
-    TAG_SCHEDULED_STATE_FINALIZED, TAG_STATE, TAG_STATE_FINALIZED,
+    program, AccountsDB, AccountsStatus, Holder, Operator, OperatorBalanceAccount,
+    OperatorBalanceValidator, StateAccount, Treasury, TAG_HOLDER, TAG_STATE, TAG_STATE_FINALIZED,
 };
 use crate::debug::log_data;
 use crate::error::{Error, Result};
 use crate::gasometer::Gasometer;
-use crate::instruction::instruction_internals::holder_parse_trx;
 use crate::instruction::transaction_step::{do_begin, do_continue};
+use crate::types::Transaction;
 use arrayref::array_ref;
 use ethnum::U256;
 use solana_program::{account_info::AccountInfo, pubkey::Pubkey};
@@ -58,8 +57,17 @@ pub fn process_inner<'a>(
 
     match tag {
         TAG_HOLDER | TAG_HOLDER_DEPRECATED => {
-            let mut trx =
-                holder_parse_trx(holder_or_storage.clone(), &operator, program_id, false)?;
+            let mut trx = {
+                let holder = Holder::from_account(program_id, holder_or_storage.clone())?;
+                holder.validate_owner(&operator)?;
+
+                let message = holder.transaction();
+                let trx = Transaction::from_rlp(&message)?;
+
+                holder.validate_transaction(&trx)?;
+
+                trx
+            };
             let origin = trx.recover_caller_address()?;
 
             operator_balance.validate_transaction(&trx)?;
@@ -81,20 +89,14 @@ pub fn process_inner<'a>(
             excessive_lamports += crate::account::legacy::update_legacy_accounts(&accounts_db)?;
             gasometer.refund_lamports(excessive_lamports);
 
-            let storage = StateAccount::new(
-                program_id,
-                holder_or_storage,
-                &accounts_db,
-                origin,
-                trx,
-                None,
-            )?;
+            let storage =
+                StateAccount::new(program_id, holder_or_storage, &accounts_db, origin, trx)?;
 
             do_begin(accounts_db, storage, gasometer)
         }
         TAG_STATE => {
             let (storage, accounts_status) =
-                StateAccount::restore(program_id, &holder_or_storage, &accounts_db)?;
+                StateAccount::restore(program_id, holder_or_storage, &accounts_db)?;
 
             operator_balance.validate_transaction(storage.trx())?;
             let miner_address = operator_balance.miner(storage.trx_origin());
@@ -107,9 +109,6 @@ pub fn process_inner<'a>(
 
             let reset = accounts_status != AccountsStatus::Ok;
             do_continue(step_count, accounts_db, storage, gasometer, reset)
-        }
-        TAG_SCHEDULED_STATE_CANCELLED | TAG_SCHEDULED_STATE_FINALIZED => {
-            Err(Error::ScheduledTxAlreadyComplete(*holder_or_storage.key))
         }
         TAG_STATE_FINALIZED | TAG_STATE_FINALIZED_DEPRECATED => Err(Error::StorageAccountFinalized),
         _ => Err(Error::AccountInvalidTag(*holder_or_storage.key, TAG_HOLDER)),

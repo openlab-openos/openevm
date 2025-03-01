@@ -1,108 +1,53 @@
 //! Error types
 #![allow(clippy::use_self)]
 
-use crate::account::InterruptedState;
-use crate::allocator::acc_allocator;
-use crate::debug::log_data;
-use crate::types::{Address, Vector};
+use std::{array::TryFromSliceError, num::TryFromIntError, str::Utf8Error};
+
 use ethnum::U256;
 use solana_program::{
     program_error::ProgramError,
     pubkey::{Pubkey, PubkeyError},
     secp256k1_recover::Secp256k1RecoverError,
 };
-use std::{array::TryFromSliceError, num::TryFromIntError, str::Utf8Error};
 use thiserror::Error;
 
-mod as_display_string {
-    use std::fmt::Display;
-
-    use serde::ser::Serializer;
-
-    pub fn serialize<T, S>(value: &T, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        T: Display,
-        S: Serializer,
-    {
-        serializer.serialize_str(&value.to_string())
-    }
-}
+use crate::types::Address;
 
 /// Errors that may be returned by the EVM Loader program.
-#[derive(Error, Debug, strum::EnumDiscriminants, serde::Serialize)]
+#[derive(Error, Debug)]
 pub enum Error {
     #[error("Error: {0}")]
     Custom(String),
 
     #[error("Solana Program Error: {0}")]
-    ProgramError(
-        #[from]
-        #[serde(with = "as_display_string")]
-        ProgramError,
-    ),
+    ProgramError(#[from] ProgramError),
 
     #[error("Solana Pubkey Error: {0}")]
-    PubkeyError(
-        #[from]
-        #[serde(with = "as_display_string")]
-        PubkeyError,
-    ),
+    PubkeyError(#[from] PubkeyError),
 
     #[error("RLP error: {0}")]
-    RlpError(
-        #[from]
-        #[serde(with = "as_display_string")]
-        rlp::DecoderError,
-    ),
+    RlpError(#[from] rlp::DecoderError),
 
     #[error("Secp256k1 error: {0}")]
-    Secp256k1Error(
-        #[from]
-        #[serde(with = "as_display_string")]
-        Secp256k1RecoverError,
-    ),
+    Secp256k1Error(#[from] Secp256k1RecoverError),
 
     #[error("Bincode error: {0}")]
-    BincodeError(
-        #[from]
-        #[serde(with = "as_display_string")]
-        bincode::Error,
-    ),
+    BincodeError(#[from] bincode::Error),
 
     #[error("IO error: {0}")]
-    BorshError(
-        #[from]
-        #[serde(with = "as_display_string")]
-        std::io::Error,
-    ),
+    BorshError(#[from] std::io::Error),
 
     #[error("FromHexError error: {0}")]
-    FromHexError(
-        #[from]
-        #[serde(with = "as_display_string")]
-        hex::FromHexError,
-    ),
+    FromHexError(#[from] hex::FromHexError),
 
     #[error("TryFromIntError error: {0}")]
-    TryFromIntError(
-        #[from]
-        #[serde(with = "as_display_string")]
-        TryFromIntError,
-    ),
+    TryFromIntError(#[from] TryFromIntError),
 
     #[error("TryFromSliceError error: {0}")]
-    TryFromSliceError(
-        #[from]
-        #[serde(with = "as_display_string")]
-        TryFromSliceError,
-    ),
+    TryFromSliceError(#[from] TryFromSliceError),
 
     #[error("Utf8Error error: {0}")]
-    Utf8Error(
-        #[from]
-        #[serde(with = "as_display_string")]
-        Utf8Error,
-    ),
+    Utf8Error(#[from] Utf8Error),
 
     #[error("Account {0} - not found")]
     AccountMissing(Pubkey),
@@ -149,33 +94,17 @@ pub enum Error {
     #[error("Transaction already finalized")]
     StorageAccountFinalized,
 
-    #[error("Storage Account {0} has invalid tag, actual {1}")]
-    StorageAccountInvalidTag(Pubkey, u8),
-
     #[error("Unknown extension method selector {1:?}, contract {0}")]
     UnknownPrecompileMethodSelector(Address, [u8; 4]),
 
     #[error("Insufficient balance for transfer, account = {0}, chain = {1}, required = {2}")]
-    InsufficientBalance(
-        Address,
-        u64,
-        #[serde(with = "ethnum::serde::bytes::le")] U256,
-    ),
+    InsufficientBalance(Address, u64, U256),
 
     #[error("Invalid token for transfer, account = {0}, chain = {1}")]
     InvalidTransferToken(Address, u64),
 
     #[error("Out of Gas, limit = {0}, required = {1}")]
-    OutOfGas(
-        #[serde(with = "ethnum::serde::bytes::le")] U256,
-        #[serde(with = "ethnum::serde::bytes::le")] U256,
-    ),
-
-    #[error("Out of Priority Fee, limit = {0}, required = {1}")]
-    OutOfPriorityFee(
-        #[serde(with = "ethnum::serde::bytes::le")] U256,
-        #[serde(with = "ethnum::serde::bytes::le")] U256,
-    ),
+    OutOfGas(U256, U256),
 
     #[error("Invalid gas balance account")]
     GasReceiverInvalidChainId,
@@ -273,117 +202,8 @@ pub enum Error {
 
     #[error("Operator Balance - invalid address")]
     OperatorBalanceInvalidAddress,
-
-    #[error(
-        "Instructions that execute Ethereum DynamicGas transaction (EIP-1559) should specify priority fee."
-    )]
-    PriorityFeeNotSpecified,
-
-    #[error("Error while parsing priority fee instructions: {0}")]
-    PriorityFeeParsingError(String),
-
-    #[error("Priority fee calculation error: {0}")]
-    PriorityFeeError(String),
-
-    #[error("Transaction Tree - not ready for destruction")]
-    TreeAccountNotReadyForDestruction,
-
-    #[error("Transaction Tree - last index overflow")]
-    TreeAccountLastIndexOverflow,
-
-    #[error("Transaction Tree - invalid payer")]
-    TreeAccountInvalidPayer,
-
-    #[error("Transaction Tree - invalid chainId")]
-    TreeAccountInvalidChainId,
-
-    #[error("Transaction Tree - invalid transaction type")]
-    TreeAccountTxInvalidType,
-
-    #[error("Transaction Tree - invalid transaction data")]
-    TreeAccountTxInvalidData,
-
-    #[error("Transaction Tree - invalid child transaction index")]
-    TreeAccountTxInvalidChildIndex,
-
-    #[error("Transaction Tree - transaction invalid parent count")]
-    TreeAccountTxInvalidParentCount,
-
-    #[error("Transaction Tree - transaction invalid success execute limit")]
-    TreeAccountTxInvalidSuccessLimit,
-
-    #[error("Transaction Tree - transaction not found")]
-    TreeAccountTxNotFound,
-
-    #[error("Transaction Tree - transaction invalid status")]
-    TreeAccountTxInvalidStatus,
-
-    #[error("Transaction Tree - transaction requires at least 1.1 GAlan for gas price")]
-    TreeAccountInvalidPriorityFeePerGas,
-
-    #[error("Transaction Tree - transaction requires at least 25'000 gas limit")]
-    TreeAccountInvalidGasLimit,
-
-    #[error("Transaction Tree - transaction with the same nonce already exists")]
-    TreeAccountAlreadyExists,
-
-    #[error("Attempt to perform an operation with classic transaction, whereas scheduled transaction is expected")]
-    NotScheduledTransaction,
-
-    #[error("Scheduled Transaction has invalid tree account: expected={0}, actual={1}")]
-    ScheduledTxInvalidTreeAccount(Pubkey, Pubkey),
-
-    #[error("Scheduled Transaction is not ready to be finalized: holder={0}")]
-    ScheduledTxNoExitStatus(Pubkey),
-
-    #[error("Schedule Transaction is already in progress, holder={0}")]
-    ScheduledTxAlreadyInProgress(Pubkey),
-
-    #[error("Schedule Transaction is already complete, holder={0}")]
-    ScheduledTxAlreadyComplete(Pubkey),
-
-    #[error("Scheduled Transaction has invalid index: inside transaction={0}, inside instruction data={1}")]
-    ScheduledTxInvalidIndex(u16, u16),
-
-    #[error("Attempt to perform an operation with scheduled transaction, whereas classic transaction is expected")]
-    NotClassicTransaction,
-
-    #[error("Treasury Account - not found")]
-    TreasuryMissing,
-
-    #[error("Account {0} - invalid header version {1}")]
-    AccountInvalidHeader(Pubkey, u8),
-
-    #[error("Revert after Solana Call is not supported")]
-    RevertAfterSolanaCall,
-
-    #[error("Unsupported EIP-2718 Transaction type | First byte: {0}")]
-    UnsuppotedEthereumTransactionType(u8),
-
-    #[error("Unsupported Neon Transaction type | Second byte: {0}")]
-    UnsuppotedNeonTransactionType(u8),
-
-    #[error("Solana programs was interrupted")]
-    InterruptedCall(#[serde(skip)] Box<Option<InterruptedState>>),
 }
 
-impl Error {
-    #[must_use]
-    pub fn code(&self) -> u8 {
-        let discriminant = ErrorDiscriminants::from(self);
-        discriminant as u8
-    }
-
-    pub fn log_data(&self) {
-        let bytes = bincode::serialize(self).unwrap();
-        log_data(&[
-            b"ERROR",
-            &self.code().to_le_bytes(),
-            &bytes,
-            (self.to_string().as_bytes()),
-        ]);
-    }
-}
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl From<Error> for ProgramError {
@@ -408,12 +228,27 @@ impl From<String> for Error {
     }
 }
 
-macro_rules! panic_with_error {
-    ($e:expr) => {{
-        let error = $crate::error::Error::from($e);
-        error.log_data();
-        panic!("{}", error);
-    }};
+/// Macro to log a `ProgramError` in the current transaction log
+/// with the source file position like: file.rc:42
+/// and additional info if needed
+/// See `https://github.com/neonlabsorg/neon-evm/issues/159`
+///
+/// # Examples
+///
+/// ```ignore
+/// #    return Err!(ProgramError::InvalidArgument; "Caller pubkey: {} ", &caller_info.key.to_string());
+/// ```
+///
+macro_rules! Err {
+    ( $n:expr; $($args:expr),* ) => ({
+        #[cfg(target_os = "solana")]
+        solana_program::msg!("{}:{} : {}", file!(), line!(), &format!($($args),*));
+
+        #[cfg(all(not(target_os = "solana"), feature = "log"))]
+        log::error!("{}", &format!($($args),*));
+
+        Err($n)
+    });
 }
 
 #[must_use]
@@ -476,7 +311,7 @@ pub fn print_revert_message(msg: &[u8]) {
 }
 
 #[must_use]
-pub fn build_revert_message(msg: &str) -> Vector<u8> {
+pub fn build_revert_message(msg: &str) -> Vec<u8> {
     let data_len = if msg.len() % 32 == 0 {
         std::cmp::max(msg.len(), 32)
     } else {
@@ -484,7 +319,7 @@ pub fn build_revert_message(msg: &str) -> Vector<u8> {
     };
 
     let capacity = 4 + 32 + 32 + data_len;
-    let mut result = Vector::with_capacity_in(capacity, acc_allocator());
+    let mut result = Vec::with_capacity(capacity);
     result.extend_from_slice(&[0x08, 0xc3, 0x79, 0xa0]); // Error(string) function selector
 
     let offset = U256::new(0x20);

@@ -1,17 +1,17 @@
-use solana_program::{account_info::AccountInfo, pubkey::Pubkey};
 use std::{cell::RefCell, rc::Rc};
 
-use crate::types::vector::VectorSliceExt;
-use crate::{types::Vector, vector};
+use ethnum::U256;
+use serde::{Deserialize, Serialize};
+use solana_program::{account_info::AccountInfo, pubkey::Pubkey};
 
-#[derive(Clone)]
-#[repr(C)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct OwnedAccountInfo {
     pub key: Pubkey,
     pub is_signer: bool,
     pub is_writable: bool,
     pub lamports: u64,
-    pub data: Vector<u8>,
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
     pub owner: Pubkey,
     pub executable: bool,
     pub rent_epoch: solana_program::clock::Epoch,
@@ -28,9 +28,9 @@ impl OwnedAccountInfo {
             data: if info.executable || (info.owner == program_id) {
                 // This is only used to emulate external programs
                 // They don't use data in our accounts
-                vector![]
+                vec![]
             } else {
-                info.data.borrow().to_vector()
+                info.data.borrow().to_vec()
             },
             owner: *info.owner,
             executable: info.executable,
@@ -54,6 +54,10 @@ impl<'a> solana_program::account_info::IntoAccountInfo<'a> for &'a mut OwnedAcco
     }
 }
 
-#[repr(C)]
-#[derive(Clone)]
-pub struct Cache {}
+#[derive(Serialize, Deserialize)]
+pub struct Cache {
+    #[serde(with = "ethnum::serde::bytes::le")]
+    pub block_number: U256,
+    #[serde(with = "ethnum::serde::bytes::le")]
+    pub block_timestamp: U256,
+}

@@ -47,21 +47,15 @@ async fn run(options: &ArgMatches<'_>) -> NeonCliResult {
             let rpc = build_rpc(options, config).await?;
 
             let request = read_tx_from_stdin()?;
-            emulate::execute(
-                &rpc,
-                &config.db_config,
-                &config.evm_loader,
-                request,
-                None::<TracerTypeEnum>,
-            )
-            .await
-            .map(|(result, _)| json!(result))
+            emulate::execute(&rpc, config.evm_loader, request, None::<TracerTypeEnum>)
+                .await
+                .map(|(result, _)| json!(result))
         }
         ("trace", Some(_)) => {
             let rpc = build_rpc(options, config).await?;
 
             let request = read_tx_from_stdin()?;
-            trace::trace_transaction(&rpc, &config.db_config, &config.evm_loader, request)
+            trace::trace_transaction(&rpc, config.evm_loader, request)
                 .await
                 .map(|trace| json!(trace))
         }
@@ -161,12 +155,14 @@ async fn build_rpc(options: &ArgMatches<'_>, config: &Config) -> Result<RpcEnum,
         .map(|slot_str| slot_str.parse().expect("slot parse error"));
 
     Ok(if let Some(slot) = slot {
-        let db_config = config
-            .db_config
-            .clone()
-            .ok_or(NeonError::LoadingDBConfigError)?;
-        let tracer_db = TracerDb::from_config(&db_config).await;
-        RpcEnum::CallDbClient(CallDbClient::new(tracer_db, slot, None).await?)
+        RpcEnum::CallDbClient(
+            CallDbClient::new(
+                TracerDb::new(config.db_config.as_ref().expect("db-config not found")),
+                slot,
+                None,
+            )
+            .await?,
+        )
     } else {
         RpcEnum::CloneRpcClient(CloneRpcClient::new_from_config(config))
     })

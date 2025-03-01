@@ -1,11 +1,4 @@
 program_id = "NeonVMyRX5GbCrsAHnUwx1nYYoJAtskU1bWUo6JGNyG"
-
-no_update_tracking_owners = [
-    "HEvSKofvBgfaexv23kMabbYqxasxU3mQ4ibBMEmJWHny",  # Chainlink oracle
-    "rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ",   # Pyth oracle
-    "FsJ3A3u2vn5cTVofAjvy6y5kwABJAqYWpe4975bi2epH",  # Pyth legacy oracle
-]
-
 operators_whitelist = [
     "NeonPQFrw5stVvs1rFLDxALWUBDCnSPsWBP83RfNUKK",
     "GYt9w8MaXztDLhhsxmQr7Ar9FJ6MmaFwav7qBrxZKwhd",
@@ -403,7 +396,3 @@ operators_whitelist = [
 [chain.neon]
 id = 245022934
 token = "NeonTjSjsuo3rexg9o6vHuMXw62f9V7zvmu8M8Zut44"
-
-[chain.sol]
-id = 245022935
-token = "So11111111111111111111111111111111111111112"

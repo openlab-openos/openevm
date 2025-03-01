@@ -1,7 +1,6 @@
 ARG SOLANA_IMAGE
-ARG DOCKERHUB_ORG_NAME
 # Install BPF SDK
-FROM solanalabs/rust:1.75.0 AS builder
+FROM solanalabs/rust:1.73.0 AS builder
 RUN cargo install rustfilt
 WORKDIR /opt
 ARG SOLANA_BPF_VERSION
@@ -21,18 +20,17 @@ RUN cargo fmt --check && \
     cargo clippy --release && \
     cargo build --release && \
     cargo test --release && \
-    cargo build-sbf --manifest-path program/Cargo.toml --features devnet && cp target/deploy/evm_loader.so target/deploy/evm_loader-devnet.so && \
-    cargo build-sbf --manifest-path program/Cargo.toml --features testnet && cp target/deploy/evm_loader.so target/deploy/evm_loader-testnet.so && \
-    cargo build-sbf --manifest-path program/Cargo.toml --features govertest && cp target/deploy/evm_loader.so target/deploy/evm_loader-govertest.so && \
-    cargo build-sbf --manifest-path program/Cargo.toml --features govertest,emergency && cp target/deploy/evm_loader.so target/deploy/evm_loader-govertest-emergency.so && \
-    cargo build-sbf --manifest-path program/Cargo.toml --features mainnet && cp target/deploy/evm_loader.so target/deploy/evm_loader-mainnet.so && \
-    cargo build-sbf --manifest-path program/Cargo.toml --features mainnet,emergency && cp target/deploy/evm_loader.so target/deploy/evm_loader-mainnet-emergency.so && \
-    cargo build-sbf --manifest-path program/Cargo.toml --features rollup && cp target/deploy/evm_loader.so target/deploy/evm_loader-rollup.so && \
-    cargo build-sbf --manifest-path program/Cargo.toml --features ci --dump
+    cargo build-bpf --manifest-path program/Cargo.toml --features devnet && cp target/deploy/evm_loader.so target/deploy/evm_loader-devnet.so && \
+    cargo build-bpf --manifest-path program/Cargo.toml --features testnet && cp target/deploy/evm_loader.so target/deploy/evm_loader-testnet.so && \
+    cargo build-bpf --manifest-path program/Cargo.toml --features govertest && cp target/deploy/evm_loader.so target/deploy/evm_loader-govertest.so && \
+    cargo build-bpf --manifest-path program/Cargo.toml --features govertest,emergency && cp target/deploy/evm_loader.so target/deploy/evm_loader-govertest-emergency.so && \
+    cargo build-bpf --manifest-path program/Cargo.toml --features mainnet && cp target/deploy/evm_loader.so target/deploy/evm_loader-mainnet.so && \
+    cargo build-bpf --manifest-path program/Cargo.toml --features mainnet,emergency && cp target/deploy/evm_loader.so target/deploy/evm_loader-mainnet-emergency.so && \
+    cargo build-bpf --manifest-path program/Cargo.toml --features ci --dump
 
 
 # Add neon_test_invoke_program to the genesis
-FROM ${DOCKERHUB_ORG_NAME}/neon_test_programs:latest AS neon_test_programs
+FROM neonlabsorg/neon_test_programs:latest AS neon_test_programs
 
 # Define solana-image that contains utility
 FROM builder AS base

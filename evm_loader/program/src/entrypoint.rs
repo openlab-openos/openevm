@@ -53,10 +53,6 @@ fn process_instruction<'a>(
             Err(ProgramError::InvalidInstructionData.into())
         }
     }
-    .map_err(|e| {
-        e.log_data();
-        e
-    })
     .map_err(ProgramError::from)
 }
 
@@ -146,50 +142,6 @@ fn process_instruction<'a>(
                 instruction,
             )
         }
-        EvmInstruction::ScheduledTransactionStartFromInstruction => {
-            instruction::scheduled_transaction_start_from_instruction::process(
-                program_id,
-                accounts,
-                instruction,
-            )
-        }
-        EvmInstruction::ScheduledTransactionStartFromAccount => {
-            instruction::scheduled_transaction_start_from_account::process(
-                program_id,
-                accounts,
-                instruction,
-            )
-        }
-        EvmInstruction::ScheduledTransactionFinish => {
-            instruction::scheduled_transaction_finish::process(program_id, accounts, instruction)
-        }
-        EvmInstruction::ScheduledTransactionSkipFromAccount => {
-            instruction::scheduled_transaction_skip_from_account::process(
-                program_id,
-                accounts,
-                instruction,
-            )
-        }
-        EvmInstruction::ScheduledTransactionSkipFromInstruction => {
-            instruction::scheduled_transaction_skip_from_instruction::process(
-                program_id,
-                accounts,
-                instruction,
-            )
-        }
-        EvmInstruction::ScheduledTransactionCreate => {
-            instruction::scheduled_transaction_create::process(program_id, accounts, instruction)
-        }
-        EvmInstruction::ScheduledTransactionCreateMultiple => {
-            instruction::scheduled_transaction_create_multiple::process(
-                program_id,
-                accounts,
-                instruction,
-            )
-        }
-        EvmInstruction::ScheduledTransactionDestroy => {
-            instruction::scheduled_transaction_destroy::process(program_id, accounts, instruction)
-        }
         EvmInstruction::ConfigGetChainCount => {
             instruction::config_get_chain_count::process(program_id, accounts, instruction)
         }
@@ -224,9 +176,5 @@ fn process_instruction<'a>(
             instruction::operator_withdraw_balance::process(program_id, accounts, instruction)
         }
     }
-    .map_err(|e| {
-        e.log_data();
-        e
-    })
     .map_err(ProgramError::from)
 }

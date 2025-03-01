@@ -98,8 +98,6 @@ pub enum NeonError {
     Panic(String),
     #[error("ClickHouse: {0}")]
     ClickHouse(ChError),
-    #[error("RocksDbError {0}")]
-    RocksDb(anyhow::Error),
     #[error("Slot {0} is less than earliest_rooted_slot={1}")]
     EarlySlot(u64, u64),
     #[error("Json Error. {0}")]
@@ -167,7 +165,6 @@ impl NeonError {
             NeonError::IncorrectLibMethod => 263,
             NeonError::StrumParseError(_) => 264,
             NeonError::SolanaSimulatorError(_) => 265,
-            NeonError::RocksDb(_) => 266,
         }
     }
 }

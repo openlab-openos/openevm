@@ -13,10 +13,7 @@ cfg_if! {
         net_specific_config_parser!("config/devnet.toml");
     } else if #[cfg(feature = "govertest")] {
         net_specific_config_parser!("config/govertest.toml");
-    } else if #[cfg(feature = "rollup")] {
-        net_specific_config_parser!("config/rollup.toml");
-    }
-    else {
+    } else {
         net_specific_config_parser!("config/default.toml");
     }
 }

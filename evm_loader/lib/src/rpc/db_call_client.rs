@@ -1,14 +1,16 @@
-use super::{e, Rpc, SliceConfig};
-use crate::types::{TracerDb, TracerDbTrait};
+use super::{e, Rpc};
+use crate::types::TracerDb;
 use crate::NeonError;
-use crate::NeonError::RocksDb;
 use async_trait::async_trait;
-use log::debug;
 use solana_client::{
     client_error::Result as ClientResult,
     client_error::{ClientError, ClientErrorKind},
 };
-use solana_sdk::{account::Account, pubkey::Pubkey};
+use solana_sdk::{
+    account::Account,
+    clock::{Slot, UnixTimestamp},
+    pubkey::Pubkey,
+};
 
 pub struct CallDbClient {
     tracer_db: TracerDb,
@@ -25,8 +27,7 @@ impl CallDbClient {
         let earliest_rooted_slot = tracer_db
             .get_earliest_rooted_slot()
             .await
-            .map_err(RocksDb)?;
-
+            .map_err(NeonError::ClickHouse)?;
         if slot < earliest_rooted_slot {
             return Err(NeonError::EarlySlot(slot, earliest_rooted_slot));
         }
@@ -38,13 +39,9 @@ impl CallDbClient {
         })
     }
 
-    async fn get_account_at(
-        &self,
-        key: &Pubkey,
-        slice: Option<SliceConfig>,
-    ) -> ClientResult<Option<Account>> {
+    async fn get_account_at(&self, key: &Pubkey) -> ClientResult<Option<Account>> {
         self.tracer_db
-            .get_account_at(key, self.slot, self.tx_index_in_block, slice)
+            .get_account_at(key, self.slot, self.tx_index_in_block)
             .await
             .map_err(|e| e!("load account error", key, e))
     }
@@ -52,12 +49,8 @@ impl CallDbClient {
 
 #[async_trait(?Send)]
 impl Rpc for CallDbClient {
-    async fn get_account_slice(
-        &self,
-        key: &Pubkey,
-        slice: Option<SliceConfig>,
-    ) -> ClientResult<Option<Account>> {
-        self.get_account_at(key, slice).await
+    async fn get_account(&self, key: &Pubkey) -> ClientResult<Option<Account>> {
+        self.get_account_at(key).await
     }
 
     async fn get_multiple_accounts(
@@ -66,10 +59,20 @@ impl Rpc for CallDbClient {
     ) -> ClientResult<Vec<Option<Account>>> {
         let mut result = Vec::new();
         for key in pubkeys {
-            result.push(self.get_account_at(key, None).await?);
+            result.push(self.get_account_at(key).await?);
         }
-        debug!("get_multiple_accounts: pubkeys={pubkeys:?} result={result:?}");
         Ok(result)
+    }
+
+    async fn get_block_time(&self, slot: Slot) -> ClientResult<UnixTimestamp> {
+        self.tracer_db
+            .get_block_time(slot)
+            .await
+            .map_err(|e| e!("get_block_time error", slot, e))
+    }
+
+    async fn get_slot(&self) -> ClientResult<Slot> {
+        Ok(self.slot)
     }
 
     async fn get_deactivated_solana_features(&self) -> ClientResult<Vec<Pubkey>> {

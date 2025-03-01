@@ -1,10 +1,10 @@
+use crate::error::Result;
 use crate::executor::OwnedAccountInfo;
 use crate::types::Address;
-use crate::{error::Result, types::Vector};
 use ethnum::U256;
 use maybe_async::maybe_async;
 use solana_program::{
-    account_info::AccountInfo, instruction::Instruction, pubkey, pubkey::Pubkey, rent::Rent,
+    account_info::AccountInfo, instruction::Instruction, pubkey::Pubkey, rent::Rent,
 };
 #[cfg(target_os = "solana")]
 use {crate::account::AccountsDB, solana_program::clock::Clock};
@@ -33,12 +33,10 @@ pub struct ProgramAccountStorage<'a> {
     synced_modified_contracts: std::collections::HashSet<Pubkey>,
 }
 
-pub const FAKE_OPERATOR: Pubkey = pubkey!("neonoperator1111111111111111111111111111111");
-
 /// Account storage
 /// Trait to access account info
 #[maybe_async(?Send)]
-pub trait AccountStorage: LogCollector {
+pub trait AccountStorage {
     /// Get `NeonEVM` program id
     fn program_id(&self) -> &Pubkey;
     /// Get operator pubkey
@@ -58,14 +56,12 @@ pub trait AccountStorage: LogCollector {
     fn return_data(&self) -> Option<(Pubkey, Vec<u8>)>;
 
     /// Set return data to Solana
-    fn set_return_data(&mut self, data: &[u8]);
+    fn set_return_data(&self, data: &[u8]);
 
     /// Get account nonce
     async fn nonce(&self, address: Address, chain_id: u64) -> u64;
     /// Get account balance
     async fn balance(&self, address: Address, chain_id: u64) -> U256;
-    /// Get solana user pubkey
-    async fn solana_user_address(&self, address: Address) -> Option<Pubkey>;
 
     fn is_valid_chain_id(&self, chain_id: u64) -> bool;
     fn chain_id_to_token(&self, chain_id: u64) -> Pubkey;
@@ -99,8 +95,8 @@ pub trait AccountStorage: LogCollector {
 }
 
 #[maybe_async(?Send)]
-pub trait SyncedAccountStorage: AccountStorage {
-    async fn set_code(&mut self, address: Address, chain_id: u64, code: Vector<u8>) -> Result<()>;
+pub trait SyncedAccountStorage {
+    async fn set_code(&mut self, address: Address, chain_id: u64, code: Vec<u8>) -> Result<()>;
     async fn set_storage(&mut self, address: Address, index: U256, value: [u8; 32]) -> Result<()>;
     async fn increment_nonce(&mut self, address: Address, chain_id: u64) -> Result<()>;
     async fn transfer(
@@ -114,20 +110,12 @@ pub trait SyncedAccountStorage: AccountStorage {
     async fn execute_external_instruction(
         &mut self,
         instruction: Instruction,
-        seeds: Vector<Vector<Vector<u8>>>,
+        seeds: Vec<Vec<Vec<u8>>>,
+        fee: u64,
         emulated_internally: bool,
     ) -> Result<()>;
 
     fn snapshot(&mut self);
     fn revert_snapshot(&mut self);
     fn commit_snapshot(&mut self);
-}
-
-pub trait LogCollector {
-    fn collect_log<const N: usize>(
-        &mut self,
-        address: &[u8; 20],
-        topics: [[u8; 32]; N],
-        data: &[u8],
-    );
 }

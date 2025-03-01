@@ -3,32 +3,32 @@
 #![allow(clippy::unsafe_derive_deserialize)]
 #![allow(clippy::future_not_send)]
 
-use crate::account::InterruptedState;
+use std::{fmt::Display, marker::PhantomData, ops::Range};
+
 use ethnum::U256;
 use maybe_async::maybe_async;
-use std::{fmt::Display, marker::PhantomData, mem::ManuallyDrop, ops::Range};
+use serde::{Deserialize, Serialize};
 
 pub use buffer::Buffer;
 
+use crate::evm::tracing::EventListener;
 #[cfg(target_os = "solana")]
 use crate::evm::tracing::NoopEventListener;
-use crate::executor::precompile_extension::PrecompiledContracts;
 use crate::{
     debug::log_data,
     error::{build_revert_message, Error, Result},
     evm::{opcode::Action, precompile::is_precompile_address},
-    types::{Address, Transaction, Vector},
+    types::{Address, Transaction},
 };
-use crate::{evm::tracing::EventListener, types::boxx::Boxx};
 
 use self::{database::Database, memory::Memory, stack::Stack};
 
 mod buffer;
 pub mod database;
 mod memory;
-pub mod opcode;
+mod opcode;
 pub mod opcode_table;
-pub mod precompile;
+mod precompile;
 mod stack;
 pub mod tracing;
 mod utils;
@@ -104,16 +104,13 @@ pub(crate) use begin_vm;
 pub(crate) use end_vm;
 pub(crate) use tracing_event;
 
-#[derive(Debug, Clone, Eq, PartialEq)]
-#[repr(C)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub enum ExitStatus {
     Stop,
-    Return(Vector<u8>),
-    Revert(Vector<u8>),
+    Return(#[serde(with = "serde_bytes")] Vec<u8>),
+    Revert(#[serde(with = "serde_bytes")] Vec<u8>),
     Suicide,
-    Interrupted(Box<Option<InterruptedState>>),
     StepLimit,
-    Cancel,
 }
 
 impl Display for ExitStatus {
@@ -128,9 +125,7 @@ impl ExitStatus {
         match self {
             ExitStatus::Return(_) | ExitStatus::Stop | ExitStatus::Suicide => "succeed",
             ExitStatus::Revert(_) => "revert",
-            ExitStatus::Interrupted(_) => "interrupted due Solana call",
             ExitStatus::StepLimit => "step limit exceeded",
-            ExitStatus::Cancel => "cancel",
         }
     }
 
@@ -138,48 +133,47 @@ impl ExitStatus {
     pub fn is_succeed(&self) -> Option<bool> {
         match self {
             ExitStatus::Stop | ExitStatus::Return(_) | ExitStatus::Suicide => Some(true),
-            ExitStatus::Revert(_) | ExitStatus::Cancel => Some(false),
-            ExitStatus::Interrupted(_) | ExitStatus::StepLimit => None,
+            ExitStatus::Revert(_) => Some(false),
+            ExitStatus::StepLimit => None,
         }
     }
 
     #[must_use]
     pub fn into_result(self) -> Option<Vec<u8>> {
         match self {
-            ExitStatus::Return(v) | ExitStatus::Revert(v) => Some(v.to_vec()),
-            ExitStatus::Stop
-            | ExitStatus::Suicide
-            | ExitStatus::Interrupted(_)
-            | ExitStatus::StepLimit
-            | ExitStatus::Cancel => None,
+            ExitStatus::Return(v) | ExitStatus::Revert(v) => Some(v),
+            ExitStatus::Stop | ExitStatus::Suicide | ExitStatus::StepLimit => None,
         }
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-#[repr(C)]
+#[derive(Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum Reason {
     Call,
     Create,
 }
 
-#[derive(Debug, Copy, Clone)]
-#[repr(C)]
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
 pub struct Context {
     pub caller: Address,
     pub contract: Address,
     pub contract_chain_id: u64,
+    #[serde(with = "ethnum::serde::bytes::le")]
     pub value: U256,
+
     pub code_address: Option<Address>,
 }
 
-#[repr(C)]
+#[derive(Serialize, Deserialize)]
+#[serde(bound = "B: Database")]
 pub struct Machine<B: Database, T: EventListener> {
     origin: Address,
     chain_id: u64,
     context: Context,
 
+    #[serde(with = "ethnum::serde::bytes::le")]
     gas_price: U256,
+    #[serde(with = "ethnum::serde::bytes::le")]
     gas_limit: U256,
 
     execution_code: Buffer,
@@ -194,33 +188,53 @@ pub struct Machine<B: Database, T: EventListener> {
     is_static: bool,
     reason: Reason,
 
-    parent: Option<Boxx<Self>>,
+    parent: Option<Box<Self>>,
 
+    #[serde(skip)]
     phantom: PhantomData<*const B>,
 
+    #[serde(skip)]
     tracer: Option<T>,
 }
 
 #[cfg(target_os = "solana")]
 impl<B: Database> Machine<B, NoopEventListener> {
-    fn reinit_buffer(buffer: &mut Buffer, backend: &B) {
-        if let Some((key, range)) = buffer.uninit_data() {
-            *buffer =
-                backend.map_solana_account(&key, |i| unsafe { Buffer::from_account(i, range) });
-        }
+    pub fn serialize_into(&self, buffer: &mut [u8]) -> Result<usize> {
+        let mut cursor = std::io::Cursor::new(buffer);
+
+        bincode::serialize_into(&mut cursor, &self)?;
+
+        cursor.position().try_into().map_err(Error::from)
     }
 
-    pub fn reinit(&mut self, backend: &B) {
-        let mut machine = self;
-        loop {
-            Self::reinit_buffer(&mut machine.call_data, backend);
-            Self::reinit_buffer(&mut machine.execution_code, backend);
-            Self::reinit_buffer(&mut machine.return_data, backend);
-            match &mut machine.parent {
-                None => break,
-                Some(parent) => machine = parent,
+    pub fn deserialize_from(buffer: &[u8], backend: &B) -> Result<Self> {
+        fn reinit_buffer<B: Database>(buffer: &mut Buffer, backend: &B) {
+            if let Some((key, range)) = buffer.uninit_data() {
+                *buffer =
+                    backend.map_solana_account(&key, |i| unsafe { Buffer::from_account(i, range) });
             }
         }
+
+        fn reinit_machine<B: Database>(
+            mut machine: &mut Machine<B, NoopEventListener>,
+            backend: &B,
+        ) {
+            loop {
+                reinit_buffer(&mut machine.call_data, backend);
+                reinit_buffer(&mut machine.execution_code, backend);
+                reinit_buffer(&mut machine.return_data, backend);
+
+                match &mut machine.parent {
+                    None => break,
+                    Some(parent) => machine = parent,
+                }
+            }
+        }
+
+        let mut evm: Self = bincode::deserialize(buffer)?;
+        reinit_machine(&mut evm, backend);
+
+        Ok(evm)
     }
 }
 
@@ -354,9 +368,12 @@ impl<B: Database, T: EventListener> Machine<B, T> {
         &mut self,
         step_limit: u64,
         backend: &mut B,
-    ) -> Result<(ExitStatus, u64, Option<u64>, Option<T>)> {
+    ) -> Result<(ExitStatus, u64, Option<T>)> {
+        assert!(self.execution_code.is_initialized());
+        assert!(self.call_data.is_initialized());
+        assert!(self.return_data.is_initialized());
+
         let mut step = 0_u64;
-        let mut step_call_solana: Option<u64> = None;
 
         begin_vm!(
             self,
@@ -377,34 +394,18 @@ impl<B: Database, T: EventListener> Machine<B, T> {
 
         let status = if is_precompile_address(&self.context.contract) {
             let value = Self::precompile(&self.context.contract, &self.call_data).unwrap();
-
             backend.commit_snapshot();
 
-            end_vm!(self, backend, ExitStatus::Return(value.clone()));
-            ExitStatus::Return(value)
-        } else if PrecompiledContracts::is_precompile_extension(&self.context.contract) {
-            let address = self.context.contract;
-            let value = PrecompiledContracts::call_precompile_extension(
-                backend,
-                &self.context,
-                &address,
-                &self.call_data,
-                self.is_static,
-            )
-            .await
-            .unwrap()?;
-
-            backend.commit_snapshot();
-            end_vm!(self, backend, ExitStatus::Return(value.clone()));
             ExitStatus::Return(value)
         } else {
             loop {
-                if step >= step_limit {
+                step += 1;
+                if step > step_limit {
                     break ExitStatus::StepLimit;
                 }
-                step += 1;
 
                 let opcode = self.execution_code.get_or_default(self.pc);
+
                 begin_step!(self, backend);
 
                 let opcode_result = match self.execute_opcode(backend, opcode).await {
@@ -422,18 +423,12 @@ impl<B: Database, T: EventListener> Machine<B, T> {
                     Action::Return(value) => break ExitStatus::Return(value),
                     Action::Revert(value) => break ExitStatus::Revert(value),
                     Action::Suicide => break ExitStatus::Suicide,
-                    Action::Interrupted(state) => {
-                        if step_call_solana.is_none() && state.is_some() {
-                            step_call_solana = Some(step);
-                        }
-                        break ExitStatus::Interrupted(state);
-                    }
                     Action::Noop => {}
                 };
             }
         };
 
-        Ok((status, step, step_call_solana, self.tracer.take()))
+        Ok((status, step, self.tracer.take()))
     }
 
     fn fork(
@@ -466,36 +461,17 @@ impl<B: Database, T: EventListener> Machine<B, T> {
         };
 
         core::mem::swap(self, &mut other);
-        self.parent = Some(crate::types::boxx::boxx(other));
+        self.parent = Some(Box::new(other));
     }
 
-    fn join(&mut self) -> ManuallyDrop<Boxx<Self>> {
+    fn join(&mut self) -> Self {
         assert!(self.parent.is_some());
 
-        let mut other = self.parent.take().unwrap();
-        core::mem::swap(self, other.as_mut());
+        let mut other = *self.parent.take().unwrap();
+        core::mem::swap(self, &mut other);
 
         self.tracer = other.tracer.take();
 
-        ManuallyDrop::new(other)
-    }
-
-    // backend and exit_status might not be used because end_vm! macros won't run on target_os is not solana
-    #[allow(unused_variables)]
-    pub async fn end_vm(&mut self, backend: &B, exit_status: ExitStatus) -> Result<()> {
-        end_vm!(self, backend, exit_status);
-        Ok(())
-    }
-
-    pub fn set_tracer(&mut self, tracer: Option<T>) {
-        self.tracer = tracer;
-    }
-
-    pub fn increment_pc(&mut self) {
-        self.pc += 1;
-    }
-
-    pub fn context(&self) -> &Context {
-        &self.context
+        other
     }
 }

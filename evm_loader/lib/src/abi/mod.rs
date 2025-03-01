@@ -4,7 +4,6 @@ mod get_config;
 mod get_contract;
 mod get_holder;
 mod get_storage_at;
-mod get_transaction_tree;
 mod simulate_solana;
 pub mod state;
 mod trace;
@@ -30,14 +29,7 @@ use serde_json::json;
 
 lazy_static! {
     static ref RUNTIME: tokio::runtime::Runtime = tokio::runtime::Runtime::new().unwrap();
-    static ref STATE: State = init_state_sync();
-}
-
-#[must_use]
-pub fn init_state_sync() -> State {
-    tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(async { State::new(load_config()).await })
+    static ref STATE: State = State::new(load_config());
 }
 
 pub const _MODULE_WM_: &WithMetadata<NeonEVMLib> = &WithMetadata::new(NeonEVMLib {
@@ -110,11 +102,6 @@ async fn dispatch(method_str: &str, params_str: &str) -> Result<String, NeonErro
         LibMethod::GetBalance => get_balance::execute(&rpc, config, params_str)
             .await
             .map(|v| serde_json::to_string(&v).unwrap()),
-        LibMethod::GetBalanceWithPubkey => {
-            get_balance::execute_with_pubkey(&rpc, config, params_str)
-                .await
-                .map(|v| serde_json::to_string(&v).unwrap())
-        }
         LibMethod::GetConfig => get_config::execute(&rpc, config, params_str)
             .await
             .map(|v| serde_json::to_string(&v).unwrap()),
@@ -128,9 +115,6 @@ async fn dispatch(method_str: &str, params_str: &str) -> Result<String, NeonErro
             .await
             .map(|v| serde_json::to_string(&v).unwrap()),
         LibMethod::SimulateSolana => simulate_solana::execute(&rpc, config, params_str)
-            .await
-            .map(|v| serde_json::to_string(&v).unwrap()),
-        LibMethod::GetTransactionTree => get_transaction_tree::execute(&rpc, config, params_str)
             .await
             .map(|v| serde_json::to_string(&v).unwrap()),
         // _ => Err(NeonError::IncorrectLibMethod),

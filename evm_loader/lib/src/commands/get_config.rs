@@ -1,20 +1,21 @@
 #![allow(clippy::future_not_send)]
 
-use std::collections::BTreeMap;
-
 use async_trait::async_trait;
 use base64::Engine;
 use enum_dispatch::enum_dispatch;
-use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr};
-use solana_client::rpc_config::RpcSimulateTransactionConfig;
 use solana_sdk::signer::Signer;
-use solana_sdk::{instruction::Instruction, pubkey::Pubkey, transaction::Transaction};
+use std::collections::BTreeMap;
 use tokio::sync::OnceCell;
 
-use crate::rpc::{CallDbClient, CloneRpcClient};
+use serde::{Deserialize, Serialize};
+use solana_sdk::{instruction::Instruction, pubkey::Pubkey, transaction::Transaction};
+
 use crate::solana_simulator::SolanaSimulator;
 use crate::NeonResult;
+
+use crate::rpc::{CallDbClient, CloneRpcClient};
+use serde_with::{serde_as, DisplayFromStr};
+use solana_client::rpc_config::RpcSimulateTransactionConfig;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Status {
@@ -43,7 +44,6 @@ pub struct GetConfigResponse {
     pub config: BTreeMap<String, String>,
 }
 
-#[allow(clippy::large_enum_variant)]
 pub enum ConfigSimulator<'r> {
     CloneRpcClient {
         program_id: Pubkey,
@@ -85,6 +85,7 @@ impl BuildConfigSimulator for CallDbClient {
     async fn build_config_simulator(&self, program_id: Pubkey) -> NeonResult<ConfigSimulator> {
         let mut simulator = SolanaSimulator::new_without_sync(self).await?;
         simulator.sync_accounts(self, &[program_id]).await?;
+
         Ok(ConfigSimulator::ProgramTestContext {
             program_id,
             simulator,
@@ -284,52 +285,31 @@ pub async fn read_chains(
     rpc: &impl BuildConfigSimulator,
     program_id: Pubkey,
 ) -> NeonResult<Vec<ChainInfo>> {
+    if rpc.use_cache() && CHAINS_CACHE.initialized() {
+        return Ok(CHAINS_CACHE.get().unwrap().clone());
+    }
+
+    let mut simulator = rpc.build_config_simulator(program_id).await?;
+    let chains = simulator.get_chains().await?;
+
     if rpc.use_cache() {
-        return CHAINS_CACHE
-            .get_or_try_init(|| get_chains(rpc, program_id))
-            .await
-            .cloned();
+        CHAINS_CACHE.set(chains.clone()).unwrap();
     }
 
-    get_chains(rpc, program_id).await
-}
-
-async fn get_chains(
-    rpc: &(impl BuildConfigSimulator + Sized),
-    program_id: Pubkey,
-) -> NeonResult<Vec<ChainInfo>> {
-    rpc.build_config_simulator(program_id)
-        .await?
-        .get_chains()
-        .await
-}
-
-async fn read_chain_id(
-    rpc: &impl BuildConfigSimulator,
-    program_id: Pubkey,
-    chain: &str,
-) -> NeonResult<u64> {
-    for c in read_chains(rpc, program_id).await? {
-        if c.name == chain {
-            return Ok(c.id);
-        }
-    }
-
-    unreachable!()
+    Ok(chains)
 }
 
 pub async fn read_legacy_chain_id(
     rpc: &impl BuildConfigSimulator,
     program_id: Pubkey,
 ) -> NeonResult<u64> {
-    read_chain_id(rpc, program_id, "neon").await
-}
+    for chain in read_chains(rpc, program_id).await? {
+        if chain.name == "neon" {
+            return Ok(chain.id);
+        }
+    }
 
-pub async fn read_sol_chain_id(
-    rpc: &impl BuildConfigSimulator,
-    program_id: Pubkey,
-) -> NeonResult<u64> {
-    read_chain_id(rpc, program_id, "sol").await
+    unreachable!()
 }
 
 #[cfg(test)]

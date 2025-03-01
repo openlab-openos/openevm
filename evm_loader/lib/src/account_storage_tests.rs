@@ -1,9 +1,7 @@
 use super::*;
 use crate::rpc;
 use crate::tracing::AccountOverride;
-use evm_loader::types::vector::VectorVecExt;
 use hex_literal::hex;
-use solana_account_decoder::UiDataSliceConfig;
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -16,45 +14,16 @@ mod mock_rpc_client {
     use async_trait::async_trait;
     use solana_client::client_error::Result as ClientResult;
     use solana_sdk::account::Account;
+    use solana_sdk::clock::{Slot, UnixTimestamp};
     use solana_sdk::pubkey::Pubkey;
     use std::collections::HashMap;
-
-    use solana_account_decoder::UiDataSliceConfig;
 
     pub struct MockRpcClient {
         accounts: HashMap<Pubkey, Account>,
     }
 
     impl MockRpcClient {
-        pub fn new(neon_accounts: &[(Pubkey, Account)]) -> Self {
-            let clock = solana_sdk::clock::Clock::default();
-            let rent = solana_sdk::rent::Rent::default();
-
-            let mut accounts: Vec<(Pubkey, Account)> = vec![
-                (
-                    solana_sdk::sysvar::clock::ID,
-                    Account {
-                        lamports: 1_009_200,
-                        data: bincode::serialize(&clock).unwrap(),
-                        owner: solana_sdk::sysvar::ID,
-                        executable: false,
-                        rent_epoch: 0,
-                    },
-                ),
-                (
-                    solana_sdk::sysvar::rent::ID,
-                    Account {
-                        lamports: 1_009_200,
-                        data: bincode::serialize(&rent).unwrap(),
-                        owner: solana_sdk::sysvar::ID,
-                        executable: false,
-                        rent_epoch: 0,
-                    },
-                ),
-            ];
-
-            accounts.extend_from_slice(neon_accounts);
-
+        pub fn new(accounts: &[(Pubkey, Account)]) -> Self {
             Self {
                 accounts: accounts.iter().cloned().collect(),
             }
@@ -63,31 +32,7 @@ mod mock_rpc_client {
 
     #[async_trait(?Send)]
     impl Rpc for MockRpcClient {
-        async fn get_account_slice(
-            &self,
-            key: &Pubkey,
-            slice: Option<UiDataSliceConfig>,
-        ) -> ClientResult<Option<Account>> {
-            if let Some(data_slice) = slice {
-                if let Some(orig_acc) = self.accounts.get(key) {
-                    let cut_to =
-                        usize::min(data_slice.offset + data_slice.length, orig_acc.data.len());
-                    let sliced_data = if data_slice.offset < orig_acc.data.len() {
-                        orig_acc.data[data_slice.offset..cut_to].to_vec()
-                    } else {
-                        vec![]
-                    };
-
-                    return Ok(Some(Account {
-                        lamports: orig_acc.lamports,
-                        data: sliced_data,
-                        owner: orig_acc.owner,
-                        executable: orig_acc.executable,
-                        rent_epoch: orig_acc.rent_epoch,
-                    }));
-                }
-            }
-
+        async fn get_account(&self, key: &Pubkey) -> ClientResult<Option<Account>> {
             let result = self.accounts.get(key).cloned();
             Ok(result)
         }
@@ -101,6 +46,14 @@ mod mock_rpc_client {
                 .map(|key| self.accounts.get(key).cloned())
                 .collect::<Vec<_>>();
             Ok(result)
+        }
+
+        async fn get_block_time(&self, _slot: Slot) -> ClientResult<UnixTimestamp> {
+            Ok(UnixTimestamp::default())
+        }
+
+        async fn get_slot(&self) -> ClientResult<Slot> {
+            Ok(Slot::default())
         }
 
         async fn get_deactivated_solana_features(&self) -> ClientResult<Vec<Pubkey>> {
@@ -644,6 +597,16 @@ impl Fixture {
         let rent = Rent::default();
         let program_id = Pubkey::from_str("53DfF883gyixYNXnM7s5xhdeyV8mVk9T4i2hGV9vG9io").unwrap();
         let accounts = vec![
+            (
+                Pubkey::from_str("SysvarRent111111111111111111111111111111111").unwrap(),
+                Account {
+                    lamports: 1_009_200,
+                    data: bincode::serialize(&rent).unwrap(),
+                    owner: Pubkey::from_str("Sysvar1111111111111111111111111111111111111").unwrap(),
+                    executable: false,
+                    rent_epoch: 0,
+                },
+            ),
             ACTUAL_BALANCE.account_with_pubkey(&program_id, &rent),
             ACTUAL_BALANCE2.account_with_pubkey(&program_id, &rent),
             LEGACY_ACCOUNT.account_with_pubkey(&program_id, &rent),
@@ -1152,7 +1115,7 @@ async fn test_deploy_at_missing_contract() {
 
     let code = hex!("14643165").to_vec();
     assert!(storage
-        .set_code(MISSING_ADDRESS, LEGACY_CHAIN_ID, code.clone().into_vector())
+        .set_code(MISSING_ADDRESS, LEGACY_CHAIN_ID, code.clone())
         .await
         .is_ok());
     storage.verify_used_accounts(&[(fixture.contract_pubkey(MISSING_ADDRESS), true, false)]);
@@ -1168,7 +1131,7 @@ async fn test_deploy_at_actual_balance() {
     let code = hex!("14643165").to_vec();
     let acc = &ACTUAL_BALANCE;
     assert!(storage
-        .set_code(acc.address, LEGACY_CHAIN_ID, code.clone().into_vector())
+        .set_code(acc.address, LEGACY_CHAIN_ID, code.clone())
         .await
         .is_ok());
     storage.verify_used_accounts(&[(fixture.contract_pubkey(acc.address), true, false)]);
@@ -1185,7 +1148,7 @@ async fn test_deploy_at_actual_contract() {
     let contract = &ACTUAL_CONTRACT;
     assert_eq!(
         storage
-            .set_code(contract.address, LEGACY_CHAIN_ID, code.into_vector())
+            .set_code(contract.address, LEGACY_CHAIN_ID, code)
             .await
             .unwrap_err()
             .to_string(),
@@ -1205,11 +1168,7 @@ async fn test_deploy_at_legacy_account() {
     let code = hex!("37455846").to_vec();
     let contract = &LEGACY_ACCOUNT;
     assert!(storage
-        .set_code(
-            contract.address,
-            LEGACY_CHAIN_ID,
-            code.clone().into_vector()
-        )
+        .set_code(contract.address, LEGACY_CHAIN_ID, code.clone())
         .await
         .is_ok());
     storage.verify_used_accounts(&[
@@ -1233,7 +1192,7 @@ async fn test_deploy_at_legacy_contract() {
     let contract = &LEGACY_CONTRACT;
     assert_eq!(
         storage
-            .set_code(contract.address, LEGACY_CHAIN_ID, code.into_vector())
+            .set_code(contract.address, LEGACY_CHAIN_ID, code)
             .await
             .unwrap_err()
             .to_string(),
@@ -1264,11 +1223,7 @@ async fn test_deploy_at_actual_suicide() {
     let contract = &ACTUAL_SUICIDE;
     // TODO: Should we deploy new contract by the previous address?
     assert!(storage
-        .set_code(
-            contract.address,
-            LEGACY_CHAIN_ID,
-            code.clone().into_vector()
-        )
+        .set_code(contract.address, LEGACY_CHAIN_ID, code.clone())
         .await
         .is_ok(),);
     storage.verify_used_accounts(&[(fixture.contract_pubkey(contract.address), true, false)]);
@@ -1288,11 +1243,7 @@ async fn test_deploy_at_legacy_suicide() {
     let contract = &LEGACY_SUICIDE;
     // TODO: Should we deploy new contract by the previous address?
     assert!(storage
-        .set_code(
-            contract.address,
-            LEGACY_CHAIN_ID,
-            code.clone().into_vector()
-        )
+        .set_code(contract.address, LEGACY_CHAIN_ID, code.clone())
         .await
         .is_ok(),);
     storage.verify_used_accounts(&[
@@ -1726,7 +1677,10 @@ async fn test_storage_with_accounts_and_override() {
     let rent = Rent::default();
     let program_id = Pubkey::from_str("53DfF883gyixYNXnM7s5xhdeyV8mVk9T4i2hGV9vG9io").unwrap();
     let account_tuple = ACTUAL_BALANCE.account_with_pubkey(&program_id, &rent);
-    let accounts_for_rpc = vec![account_tuple.clone()];
+    let accounts_for_rpc = vec![
+        (solana_sdk::sysvar::rent::id(), account_tuple.1.clone()),
+        account_tuple.clone(),
+    ];
     let rpc_client = mock_rpc_client::MockRpcClient::new(&accounts_for_rpc);
     let accounts_for_storage: Vec<Pubkey> = vec![account_tuple.0];
     let storage = EmulatorAccountStorage::with_accounts(
@@ -1775,7 +1729,10 @@ async fn test_storage_new_from_other_and_override() {
     let rent = Rent::default();
     let program_id = Pubkey::from_str("53DfF883gyixYNXnM7s5xhdeyV8mVk9T4i2hGV9vG9io").unwrap();
     let account_tuple = ACTUAL_BALANCE.account_with_pubkey(&program_id, &rent);
-    let accounts_for_rpc = vec![account_tuple.clone()];
+    let accounts_for_rpc = vec![
+        (solana_sdk::sysvar::rent::id(), account_tuple.1.clone()),
+        account_tuple.clone(),
+    ];
     let rpc_client = mock_rpc_client::MockRpcClient::new(&accounts_for_rpc);
     let accounts_for_storage: Vec<Pubkey> = vec![account_tuple.0];
     let storage = EmulatorAccountStorage::with_accounts(
@@ -1819,33 +1776,4 @@ async fn test_storage_new_from_other_and_override() {
             .expect("Failed to read balance"),
         expected_balance
     );
-}
-
-#[tokio::test]
-async fn test_storage_get_account_slice() {
-    let slice_from = 2;
-    let slice_size = 20;
-    let test_key = Pubkey::new_unique();
-    let acc = Account::new(10, 1 * 1024 * 1024, &solana_sdk::sysvar::rent::id());
-
-    let account_tuple = (test_key, acc);
-    let accounts_for_rpc = vec![account_tuple.clone()];
-    let rpc_client = mock_rpc_client::MockRpcClient::new(&accounts_for_rpc);
-    let acc_no_slice = rpc_client
-        .get_account(&test_key)
-        .await
-        .expect("Failed to get account slice");
-
-    let slice_cfg = UiDataSliceConfig {
-        offset: slice_from,
-        length: slice_size,
-    };
-    let sliced_acc = rpc_client
-        .get_account_slice(&test_key, Some(slice_cfg))
-        .await
-        .expect("Failed to get account slice");
-    assert!(acc_no_slice.is_some());
-    assert!(sliced_acc.is_some());
-    assert!(acc_no_slice.unwrap().data.len() > 2000);
-    assert_eq!(sliced_acc.unwrap().data.len(), slice_size);
 }

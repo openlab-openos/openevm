@@ -1,24 +1,17 @@
-use std::cell::RefCell;
-
 use ethnum::{AsU256, U256};
 use maybe_async::maybe_async;
 use solana_program::instruction::Instruction;
 use solana_program::pubkey::Pubkey;
 use solana_program::rent::Rent;
 
-use super::precompile_extension::PrecompiledContracts;
-use super::state::TimestampedContracts;
-use super::{BlockParams, OwnedAccountInfo};
-
-use crate::account_storage::{AccountStorage, LogCollector, SyncedAccountStorage};
-use crate::allocator::acc_allocator;
+use crate::account_storage::{AccountStorage, SyncedAccountStorage};
 use crate::error::{Error, Result};
 use crate::evm::database::Database;
-use crate::evm::precompile::is_precompile_address;
 use crate::evm::Context;
-use crate::executor::action;
-use crate::executor::ExecutorStateData;
-use crate::types::{Address, TreeMap, Vector};
+use crate::types::Address;
+
+use super::precompile_extension::PrecompiledContracts;
+use super::OwnedAccountInfo;
 
 enum Action {
     SetTransientStorage {
@@ -30,81 +23,23 @@ enum Action {
 
 pub struct SyncedExecutorState<'a, B: AccountStorage> {
     pub backend: &'a mut B,
-    pub block_params: Option<BlockParams>,
-    pub timestamped_contracts: RefCell<TimestampedContracts>,
-    actions: Vector<Action>,
-    stack: Vector<usize>,
+    actions: Vec<Action>,
+    stack: Vec<usize>,
 }
 
-impl<'a, B: SyncedAccountStorage> SyncedExecutorState<'a, B> {
+impl<'a, B: AccountStorage + SyncedAccountStorage> SyncedExecutorState<'a, B> {
     #[must_use]
     pub fn new(backend: &'a mut B) -> Self {
         Self {
             backend,
-            actions: Vector::with_capacity_in(64, acc_allocator()),
-            stack: Vector::with_capacity_in(16, acc_allocator()),
-            block_params: None,
-            timestamped_contracts: RefCell::new(TreeMap::new()),
+            actions: Vec::with_capacity(64),
+            stack: Vec::with_capacity(16),
         }
-    }
-
-    #[must_use]
-    pub fn new_with_state_data(backend: &'a mut B, state_data: &'a ExecutorStateData) -> Self {
-        let mut actions = Vector::with_capacity_in(64, acc_allocator());
-        let mut stack = state_data.into_stack().clone();
-
-        for (action_idx, action) in state_data.into_actions().iter().enumerate() {
-            if let action::Action::EvmSetTransientStorage {
-                address,
-                index,
-                value,
-            } = action
-            {
-                actions.push(Action::SetTransientStorage {
-                    address: *address,
-                    index: *index,
-                    value: *value,
-                });
-            } else {
-                for (frame_idx, frame) in stack.iter_mut().enumerate() {
-                    if state_data.into_stack()[frame_idx] >= action_idx {
-                        *frame -= 1;
-                    }
-                }
-            }
-        }
-
-        Self {
-            backend,
-            actions,
-            stack,
-            block_params: Some(state_data.block_params),
-            timestamped_contracts: RefCell::clone(&state_data.timestamped_contracts),
-        }
-    }
-
-    #[must_use]
-    pub fn backend(&self) -> &B {
-        self.backend
-    }
-}
-
-impl<B: AccountStorage> LogCollector for SyncedExecutorState<'_, B> {
-    fn collect_log<const N: usize>(
-        &mut self,
-        address: &[u8; 20],
-        topics: [[u8; 32]; N],
-        data: &[u8],
-    ) {
-        self.backend.collect_log(address, topics, data);
     }
 }
 
 #[maybe_async(?Send)]
-impl<'a, B: SyncedAccountStorage> Database for SyncedExecutorState<'a, B> {
-    fn is_synced_state(&self) -> bool {
-        true
-    }
+impl<'a, B: AccountStorage + SyncedAccountStorage> Database for SyncedExecutorState<'a, B> {
     fn program_id(&self) -> &Pubkey {
         self.backend.program_id()
     }
@@ -116,11 +51,6 @@ impl<'a, B: SyncedAccountStorage> Database for SyncedExecutorState<'a, B> {
     }
     fn contract_pubkey(&self, address: Address) -> (Pubkey, u8) {
         self.backend.contract_pubkey(address)
-    }
-
-    async fn solana_user_address(&self, address: Address) -> Result<Option<Pubkey>> {
-        let pubkey = self.backend.solana_user_address(address).await;
-        Ok(pubkey)
     }
 
     async fn nonce(&self, from_address: Address, from_chain_id: u64) -> Result<u64> {
@@ -176,27 +106,17 @@ impl<'a, B: SyncedAccountStorage> Database for SyncedExecutorState<'a, B> {
 
     async fn code_size(&self, from_address: Address) -> Result<usize> {
         if PrecompiledContracts::is_precompile_extension(&from_address) {
-            return Ok(1);
-        }
-        if is_precompile_address(&from_address) {
-            return Ok(0);
+            return Ok(1); // This is required in order to make a normal call to an extension contract
         }
 
         Ok(self.backend.code_size(from_address).await)
     }
 
     async fn code(&self, from_address: Address) -> Result<crate::evm::Buffer> {
-        if PrecompiledContracts::is_precompile_extension(&from_address) {
-            return Ok(crate::evm::Buffer::from_slice(&[0xFE]));
-        }
-        if is_precompile_address(&from_address) {
-            return Ok(crate::evm::Buffer::from_slice(&[]));
-        }
-
         Ok(self.backend.code(from_address).await)
     }
 
-    async fn set_code(&mut self, address: Address, chain_id: u64, code: Vector<u8>) -> Result<()> {
+    async fn set_code(&mut self, address: Address, chain_id: u64, code: Vec<u8>) -> Result<()> {
         if code.starts_with(&[0xEF]) {
             // https://eips.ethereum.org/EIPS/eip-3541
             return Err(Error::EVMObjectFormatNotSupported(address));
@@ -277,25 +197,11 @@ impl<'a, B: SyncedAccountStorage> Database for SyncedExecutorState<'a, B> {
         Ok(self.backend.block_hash(number).await)
     }
 
-    fn block_number(&self, current_contract: Address) -> Result<U256> {
-        let mut timestamped_contracts = self.timestamped_contracts.borrow_mut();
-        timestamped_contracts.insert_if_not_exists(current_contract, ());
-
-        if let Some(block) = self.block_params {
-            return Ok(block.number);
-        }
-
+    fn block_number(&self) -> Result<U256> {
         Ok(self.backend.block_number())
     }
 
-    fn block_timestamp(&self, current_contract: Address) -> Result<U256> {
-        let mut timestamped_contracts = self.timestamped_contracts.borrow_mut();
-        timestamped_contracts.insert_if_not_exists(current_contract, ());
-
-        if let Some(block) = self.block_params {
-            return Ok(block.timestamp);
-        }
-
+    fn block_timestamp(&self) -> Result<U256> {
         Ok(self.backend.block_timestamp())
     }
 
@@ -357,7 +263,7 @@ impl<'a, B: SyncedAccountStorage> Database for SyncedExecutorState<'a, B> {
         address: &Address,
         data: &[u8],
         is_static: bool,
-    ) -> Option<Result<Vector<u8>>> {
+    ) -> Option<Result<Vec<u8>>> {
         PrecompiledContracts::call_precompile_extension(self, context, address, data, is_static)
             .await
     }
@@ -371,22 +277,18 @@ impl<'a, B: SyncedAccountStorage> Database for SyncedExecutorState<'a, B> {
     }
 
     async fn contract_chain_id(&self, contract: Address) -> Result<u64> {
-        if PrecompiledContracts::is_precompile_extension(&contract)
-            || is_precompile_address(&contract)
-        {
-            return Ok(self.default_chain_id());
-        }
         self.backend.contract_chain_id(contract).await
     }
 
     async fn queue_external_instruction(
         &mut self,
         instruction: Instruction,
-        seeds: Vector<Vector<Vector<u8>>>,
+        seeds: Vec<Vec<Vec<u8>>>,
+        fee: u64,
         emulated_internally: bool,
     ) -> Result<()> {
         self.backend
-            .execute_external_instruction(instruction, seeds, emulated_internally)
+            .execute_external_instruction(instruction, seeds, fee, emulated_internally)
             .await?;
         Ok(())
     }

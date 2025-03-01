@@ -1,6 +1,5 @@
 use evm_loader::{
     account::{legacy::LegacyEtherData, ContractAccount},
-    executor::precompile_extension::PrecompiledContracts,
     types::Address,
 };
 use serde::{Deserialize, Serialize};
@@ -82,10 +81,11 @@ fn read_account(
 pub async fn execute(
     rpc: &(impl Rpc + BuildConfigSimulator),
     program_id: &Pubkey,
-    account_addresses: &[Address],
+    accounts: &[Address],
 ) -> NeonResult<Vec<GetContractResponse>> {
     let legacy_chain_id = super::get_config::read_legacy_chain_id(rpc, *program_id).await?;
-    let pubkeys: Vec<_> = account_addresses
+
+    let pubkeys: Vec<_> = accounts
         .iter()
         .map(|a| a.find_solana_address(program_id).0)
         .collect();
@@ -93,13 +93,8 @@ pub async fn execute(
     let accounts = rpc.get_multiple_accounts(&pubkeys).await?;
 
     let mut result = Vec::with_capacity(accounts.len());
-    for ((key, account), account_address) in
-        pubkeys.into_iter().zip(accounts).zip(account_addresses)
-    {
-        let mut response = read_account(program_id, legacy_chain_id, key, account);
-        if PrecompiledContracts::is_precompile_extension(account_address) {
-            response.code = vec![0xfe];
-        }
+    for (key, account) in pubkeys.into_iter().zip(accounts) {
+        let response = read_account(program_id, legacy_chain_id, key, account);
         result.push(response);
     }
 

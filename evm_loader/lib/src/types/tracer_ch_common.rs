@@ -8,8 +8,6 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 use thiserror::Error;
 
-use crate::account_data::AccountData;
-
 pub const ROOT_BLOCK_DELAY: u8 = 100;
 
 #[derive(Error, Debug)]
@@ -67,7 +65,6 @@ pub struct RevisionRow {
 
 #[derive(Row, serde::Deserialize, Clone)]
 pub struct AccountRow {
-    pub pubkey: Vec<u8>,
     pub owner: Vec<u8>,
     pub lamports: u64,
     pub executable: bool,
@@ -78,10 +75,9 @@ pub struct AccountRow {
 
 impl fmt::Debug for AccountRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut debug_struct = f.debug_struct("AccountRow");
+        let mut debug_struct = f.debug_struct("Account");
 
         debug_struct
-            .field("pubkey", &bs58::encode(&self.pubkey).into_string())
             .field("owner", &bs58::encode(&self.owner).into_string())
             .field("lamports", &self.lamports)
             .field("executable", &self.executable)
@@ -105,20 +101,16 @@ impl fmt::Debug for AccountRow {
     }
 }
 
-fn pubkey_from(src: Vec<u8>) -> Result<Pubkey, String> {
-    Pubkey::try_from(src).map_err(|src| {
-        format!(
-            "Incorrect slice length ({}) while converting owner from: {src:?}",
-            src.len(),
-        )
-    })
-}
-
 impl TryInto<Account> for AccountRow {
     type Error = String;
 
     fn try_into(self) -> Result<Account, Self::Error> {
-        let owner = pubkey_from(self.owner)?;
+        let owner = Pubkey::try_from(self.owner).map_err(|src| {
+            format!(
+                "Incorrect slice length ({}) while converting owner from: {src:?}",
+                src.len(),
+            )
+        })?;
 
         Ok(Account {
             lamports: self.lamports,
@@ -127,26 +119,6 @@ impl TryInto<Account> for AccountRow {
             rent_epoch: self.rent_epoch,
             executable: self.executable,
         })
-    }
-}
-
-impl TryInto<AccountData> for AccountRow {
-    type Error = String;
-
-    fn try_into(self) -> Result<AccountData, Self::Error> {
-        let owner = pubkey_from(self.owner)?;
-        let pubkey = pubkey_from(self.pubkey)?;
-
-        Ok(AccountData::new_from_account(
-            pubkey,
-            &Account {
-                lamports: self.lamports,
-                data: self.data,
-                owner,
-                rent_epoch: self.rent_epoch,
-                executable: self.executable,
-            },
-        ))
     }
 }
 

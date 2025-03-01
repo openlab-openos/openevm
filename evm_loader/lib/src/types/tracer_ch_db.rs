@@ -1,20 +1,14 @@
 use crate::{
     commands::get_neon_elf::get_elf_parameter,
     types::tracer_ch_common::{AccountRow, ChError, RevisionRow, SlotParent, ROOT_BLOCK_DELAY},
-    types::{DbResult, TracerDbTrait},
 };
 
 use super::tracer_ch_common::{ChResult, EthSyncStatus, EthSyncing, RevisionMap, SlotParentRooted};
-use crate::account_data::AccountData;
-use crate::config::ChDbConfig;
-use crate::types::programs_cache::cut_programdata_from_acc;
-use anyhow::anyhow;
-use async_trait::async_trait;
+
+use crate::types::ChDbConfig;
 use clickhouse::Client;
 use log::{debug, error, info};
 use rand::Rng;
-pub use solana_account_decoder::UiDataSliceConfig as SliceConfig;
-use solana_sdk::signature::Signature;
 use solana_sdk::{
     account::Account,
     clock::{Slot, UnixTimestamp},
@@ -31,274 +25,6 @@ use std::{
 #[derive(Clone)]
 pub struct ClickHouseDb {
     pub client: Client,
-}
-
-#[async_trait]
-impl TracerDbTrait for ClickHouseDb {
-    // Returned value is not used for tracer methods.
-    async fn get_block_time(&self, slot: Slot) -> DbResult<UnixTimestamp> {
-        let time_start = Instant::now();
-        let query =
-            "SELECT JSONExtractInt(notify_block_json, 'block_time') FROM events.notify_block_distributed WHERE slot = ? LIMIT 1";
-        let result = self
-            .client
-            .query(query)
-            .bind(slot)
-            .fetch_one::<UnixTimestamp>()
-            .await
-            .map_err(std::convert::Into::into);
-        let execution_time = Instant::now().duration_since(time_start);
-        info!(
-            "get_block_time sql time: {} sec",
-            execution_time.as_secs_f64()
-        );
-        result
-    }
-
-    async fn get_earliest_rooted_slot(&self) -> DbResult<u64> {
-        let time_start = Instant::now();
-        let query = "SELECT min(slot) FROM events.rooted_slots";
-        let result = self
-            .client
-            .query(query)
-            .fetch_one::<u64>()
-            .await
-            .map_err(std::convert::Into::into);
-        let execution_time = Instant::now().duration_since(time_start);
-        info!(
-            "get_earliest_rooted_slot sql returned {result:?}, time: {} sec",
-            execution_time.as_secs_f64()
-        );
-        result
-    }
-
-    async fn get_latest_block(&self) -> DbResult<u64> {
-        let time_start = Instant::now();
-        let query = "SELECT max(slot) FROM events.update_slot";
-        let result = self
-            .client
-            .query(query)
-            .fetch_one::<u64>()
-            .await
-            .map_err(std::convert::Into::into);
-        let execution_time = Instant::now().duration_since(time_start);
-        info!(
-            "get_latest_block sql returned {result:?}, time: {} sec",
-            execution_time.as_secs_f64()
-        );
-        result
-    }
-
-    async fn get_account_at(
-        &self,
-        pubkey: &Pubkey,
-        slot: u64,
-        tx_index_in_block: Option<u64>,
-        data_slice: Option<SliceConfig>,
-    ) -> DbResult<Option<Account>> {
-        let result = self
-            .get_full_account_at(pubkey, slot, tx_index_in_block)
-            .await;
-        if let Ok(Some(mut account)) = result {
-            if let Some(slice) = data_slice {
-                cut_programdata_from_acc(&mut account, slice).await;
-            }
-            Ok(Some(account))
-        } else {
-            result
-        }
-    }
-
-    async fn get_transaction_index(&self, signature: Signature) -> DbResult<u64> {
-        let query = r"
-        SELECT idx
-        FROM events.notify_transaction_distributed
-        WHERE signature = ?
-        LIMIT 1
-        ";
-        self.client
-            .query(query)
-            .bind(format!("{:?}", signature.as_ref()))
-            .fetch_one::<u64>()
-            .await
-            .map_err(Into::into)
-    }
-
-    async fn get_neon_revisions(&self, pubkey: &Pubkey) -> DbResult<RevisionMap> {
-        let query = r"SELECT slot, data
-        FROM events.update_account_distributed
-        WHERE
-            pubkey = ?
-        ORDER BY
-            slot ASC,
-            write_version ASC";
-
-        let pubkey_str = format!("{:?}", pubkey.to_bytes());
-        let rows: Vec<RevisionRow> = self
-            .client
-            .query(query)
-            .bind(pubkey_str)
-            .fetch_all()
-            .await?;
-
-        let mut results: Vec<(u64, String)> = Vec::new();
-
-        for row in rows {
-            let neon_revision = get_elf_parameter(&row.data, "NEON_REVISION").map_err(|e| {
-                anyhow!(ChError::Db(clickhouse::error::Error::Custom(format!(
-                    "Failed to get NEON_REVISION, error: {e}",
-                ))))
-            })?;
-            results.push((row.slot, neon_revision));
-        }
-        let ranges = RevisionMap::build_ranges(&results);
-
-        Ok(RevisionMap::new(ranges))
-    }
-
-    async fn get_neon_revision(&self, slot: Slot, pubkey: &Pubkey) -> DbResult<String> {
-        let query = r"SELECT data
-        FROM events.update_account_distributed
-        WHERE
-            pubkey = ? AND slot <= ?
-        ORDER BY
-            pubkey ASC,
-            slot ASC,
-            write_version ASC
-        LIMIT 1
-        ";
-
-        let pubkey_str = format!("{:?}", pubkey.to_bytes());
-
-        let data = Self::row_opt(
-            self.client
-                .query(query)
-                .bind(pubkey_str)
-                .bind(slot)
-                .fetch_one::<Vec<u8>>()
-                .await,
-        )?;
-        if let Some(data) = data {
-            let neon_revision =
-                get_elf_parameter(data.as_slice(), "NEON_REVISION").map_err(|e| {
-                    ChError::Db(clickhouse::error::Error::Custom(format!(
-                        "Failed to get NEON_REVISION, error: {e:?}",
-                    )))
-                })?;
-            Ok(neon_revision)
-        } else {
-            let err = clickhouse::error::Error::Custom(format!(
-                "get_neon_revision: for slot {slot} and pubkey {pubkey} not found",
-            ));
-            Err(anyhow!(ChError::Db(err)))
-        }
-    }
-
-    async fn get_slot_by_blockhash(&self, blockhash: String) -> DbResult<u64> {
-        let query = r"SELECT slot
-        FROM events.notify_block_distributed
-        WHERE hash = ?
-        LIMIT 1
-        ";
-
-        let slot = Self::row_opt(
-            self.client
-                .query(query)
-                .bind(blockhash)
-                .fetch_one::<u64>()
-                .await,
-        )?;
-        slot.map_or_else(
-            || {
-                Err(anyhow!(ChError::Db(clickhouse::error::Error::Custom(
-                    "get_slot_by_blockhash: no data available".to_string(),
-                ))))
-            },
-            Ok,
-        )
-    }
-
-    async fn get_sync_status(&self) -> DbResult<EthSyncStatus> {
-        let query_is_startup = r"SELECT is_startup
-        FROM events.update_account_distributed
-        WHERE slot = (
-          SELECT MAX(slot)
-          FROM events.update_account_distributed
-        )
-        LIMIT 1
-        ";
-
-        let is_startup = Self::row_opt(
-            self.client
-                .query(query_is_startup)
-                .fetch_one::<bool>()
-                .await,
-        )?;
-
-        if is_startup == Some(true) {
-            let query = r"SELECT slot
-            FROM (
-              (SELECT MIN(slot) as slot FROM events.notify_block_distributed)
-              UNION ALL
-              (SELECT MAX(slot) as slot FROM events.notify_block_distributed)
-              UNION ALL
-              (SELECT MAX(slot) as slot FROM events.notify_block_distributed)
-            )
-            ORDER BY slot ASC
-            ";
-
-            let data = Self::row_opt(self.client.query(query).fetch_one::<EthSyncing>().await)?;
-
-            return data.map_or_else(
-                || {
-                    Err(anyhow!(ChError::Db(clickhouse::error::Error::Custom(
-                        "get_sync_status: no data available".to_string(),
-                    ))))
-                },
-                |data| Ok(EthSyncStatus::new(Some(data))),
-            );
-        }
-
-        Ok(EthSyncStatus::new(None))
-    }
-
-    async fn get_accounts_in_transaction(
-        &self,
-        sol_sig: &[u8],
-        slot: u64,
-    ) -> DbResult<Vec<AccountData>> {
-        info!("get_accounts_in_transaction {{signature: {sol_sig:?} }}");
-
-        let query = r"
-            SELECT DISTINCT ON (pubkey)
-                pubkey, owner, lamports, executable, rent_epoch, data, txn_signature
-            FROM events.update_account_distributed
-            WHERE txn_signature = ?
-                AND slot = ?
-            ORDER BY write_version DESC
-            ";
-
-        let rows = self
-            .client
-            .query(query)
-            .bind(sol_sig)
-            .bind(slot)
-            .fetch_all::<AccountRow>()
-            .await?;
-
-        let mut accounts: Vec<AccountData> = Vec::new();
-
-        for row in rows {
-            let account_data = row.try_into().map_err(|e| {
-                anyhow!(ChError::Db(clickhouse::error::Error::Custom(format!(
-                    "get_accounts_in_transaction: Failed to convert row to AccountData, error: {e}",
-                ))))
-            })?;
-            accounts.push(account_data);
-        }
-
-        Ok(accounts)
-    }
 }
 
 impl ClickHouseDb {
@@ -318,29 +44,61 @@ impl ClickHouseDb {
 
         Self { client }
     }
-    async fn get_full_account_at(
-        &self,
-        pubkey: &Pubkey,
-        slot: u64,
-        tx_index_in_block: Option<u64>,
-    ) -> DbResult<Option<Account>> {
-        if let Some(tx_index_in_block) = tx_index_in_block {
-            return if let Some(account) = self
-                .get_account_at_index_in_block(pubkey, slot, tx_index_in_block)
-                .await?
-            {
-                Ok(Some(account))
-            } else {
-                self.get_account_at_slot(pubkey, slot - 1)
-                    .await
-                    .map_err(|e| anyhow!("Failed to get NEON_REVISION, error: {e}"))
-            };
-        }
 
-        self.get_account_at_slot(pubkey, slot)
+    // Returned value is not used for tracer methods.
+    pub async fn get_block_time(&self, slot: Slot) -> ChResult<UnixTimestamp> {
+        let time_start = Instant::now();
+        let query =
+            "SELECT JSONExtractInt(notify_block_json, 'block_time') FROM events.notify_block_distributed WHERE slot = ? LIMIT 1";
+        let result = self
+            .client
+            .query(query)
+            .bind(slot)
+            .fetch_one::<UnixTimestamp>()
             .await
-            .map_err(|e| anyhow!("Failed to get NEON_REVISION, error: {e}"))
+            .map_err(std::convert::Into::into);
+        let execution_time = Instant::now().duration_since(time_start);
+        info!(
+            "get_block_time sql time: {} sec",
+            execution_time.as_secs_f64()
+        );
+        result
     }
+
+    pub async fn get_earliest_rooted_slot(&self) -> ChResult<u64> {
+        let time_start = Instant::now();
+        let query = "SELECT min(slot) FROM events.rooted_slots";
+        let result = self
+            .client
+            .query(query)
+            .fetch_one::<u64>()
+            .await
+            .map_err(std::convert::Into::into);
+        let execution_time = Instant::now().duration_since(time_start);
+        info!(
+            "get_earliest_rooted_slot sql returned {result:?}, time: {} sec",
+            execution_time.as_secs_f64()
+        );
+        result
+    }
+
+    pub async fn get_latest_block(&self) -> ChResult<u64> {
+        let time_start = Instant::now();
+        let query = "SELECT max(slot) FROM events.update_slot";
+        let result = self
+            .client
+            .query(query)
+            .fetch_one::<u64>()
+            .await
+            .map_err(std::convert::Into::into);
+        let execution_time = Instant::now().duration_since(time_start);
+        info!(
+            "get_latest_block sql returned {result:?}, time: {} sec",
+            execution_time.as_secs_f64()
+        );
+        result
+    }
+
     async fn get_branch_slots(&self, slot: Option<u64>) -> ChResult<(u64, Vec<u64>)> {
         fn branch_from(
             rows: Vec<SlotParent>,
@@ -364,7 +122,7 @@ impl ClickHouseDb {
 
         info!("get_branch_slots {{ slot: {slot:?} }}");
 
-        let query = r"
+        let query = r#"
             SELECT DISTINCT ON (slot, parent) slot, parent, status
             FROM events.update_slot
             WHERE slot >= (
@@ -375,7 +133,7 @@ impl ClickHouseDb {
                 )
                 AND isNotNull(parent)
             ORDER BY slot DESC, status DESC
-            ";
+            "#;
         let time_start = Instant::now();
         let mut rows = self
             .client
@@ -425,7 +183,7 @@ impl ClickHouseDb {
     async fn get_account_rooted_slot(&self, key: &str, slot: u64) -> ChResult<Option<u64>> {
         info!("get_account_rooted_slot {{ key: {key}, slot: {slot} }}");
 
-        let query = r"
+        let query = r#"
         SELECT DISTINCT uad.slot
         FROM events.update_account_distributed AS uad
         WHERE uad.pubkey = ?
@@ -437,7 +195,7 @@ impl ClickHouseDb {
           ) >= 1
         ORDER BY uad.slot DESC
         LIMIT 1
-        ";
+        "#;
 
         let time_start = Instant::now();
         let slot_opt = Self::row_opt(
@@ -457,6 +215,26 @@ impl ClickHouseDb {
         );
 
         Ok(slot_opt)
+    }
+
+    pub async fn get_account_at(
+        &self,
+        pubkey: &Pubkey,
+        slot: u64,
+        tx_index_in_block: Option<u64>,
+    ) -> ChResult<Option<Account>> {
+        if let Some(tx_index_in_block) = tx_index_in_block {
+            return if let Some(account) = self
+                .get_account_at_index_in_block(pubkey, slot, tx_index_in_block)
+                .await?
+            {
+                Ok(Some(account))
+            } else {
+                self.get_account_at_slot(pubkey, slot - 1).await
+            };
+        }
+
+        self.get_account_at_slot(pubkey, slot).await
     }
 
     async fn get_account_at_slot(
@@ -486,14 +264,14 @@ impl ClickHouseDb {
         let mut row = if branch.is_empty() {
             None
         } else {
-            let query = r"
-                SELECT pubkey, owner, lamports, executable, rent_epoch, data, txn_signature
+            let query = r#"
+                SELECT owner, lamports, executable, rent_epoch, data, txn_signature
                 FROM events.update_account_distributed
                 WHERE pubkey = ?
                   AND slot IN ?
                 ORDER BY pubkey, slot DESC, write_version DESC
                 LIMIT 1
-            ";
+            "#;
 
             let time_start = Instant::now();
             let row = Self::row_opt(
@@ -547,15 +325,15 @@ impl ClickHouseDb {
             "get_account_at_index_in_block {{ pubkey: {pubkey}, slot: {slot}, tx_index_in_block: {tx_index_in_block} }}"
         );
 
-        let query = r"
-            SELECT pubkey, owner, lamports, executable, rent_epoch, data, txn_signature
+        let query = r#"
+            SELECT owner, lamports, executable, rent_epoch, data, txn_signature
             FROM events.update_account_distributed
             WHERE pubkey = ?
               AND slot = ?
               AND write_version <= ?
             ORDER BY write_version DESC
             LIMIT 1
-        ";
+        "#;
 
         let time_start = Instant::now();
 
@@ -590,13 +368,13 @@ impl ClickHouseDb {
         pubkey: &str,
         slot: u64,
     ) -> ChResult<Option<AccountRow>> {
-        let query = r"
+        let query = r#"
             SELECT owner, lamports, executable, rent_epoch, data, txn_signature
             FROM events.older_account_distributed FINAL
             WHERE pubkey = ? AND slot <= ?
             ORDER BY slot DESC
             LIMIT 1
-        ";
+        "#;
         Self::row_opt(
             self.client
                 .query(query)
@@ -612,7 +390,7 @@ impl ClickHouseDb {
     }
 
     async fn get_sol_sig_rooted_slot(&self, sol_sig: &[u8; 64]) -> ChResult<Option<SlotParent>> {
-        let query = r"
+        let query = r#"
             SELECT slot, parent
             FROM events.rooted_slots
             WHERE slot IN (
@@ -622,7 +400,7 @@ impl ClickHouseDb {
                 )
             ORDER BY slot DESC
             LIMIT 1
-        ";
+        "#;
 
         Self::row_opt(
             self.client
@@ -640,7 +418,7 @@ impl ClickHouseDb {
 
     async fn get_sol_sig_confirmed_slot(&self, sol_sig: &[u8; 64]) -> ChResult<Option<SlotParent>> {
         let (_, slot_vec) = self.get_branch_slots(None).await?;
-        let query = r"
+        let query = r#"
             SELECT slot, parent, status
             FROM events.update_slot
             WHERE slot IN ?
@@ -651,7 +429,7 @@ impl ClickHouseDb {
                 )
             ORDER BY slot DESC
             LIMIT 1
-        ";
+        "#;
 
         Self::row_opt(
             self.client
@@ -672,8 +450,7 @@ impl ClickHouseDb {
         &self,
         pubkey: &Pubkey,
         sol_sig: &[u8; 64],
-        bin_slice: Option<SliceConfig>,
-    ) -> DbResult<Option<Account>> {
+    ) -> ChResult<Option<Account>> {
         let sol_sig_str = bs58::encode(sol_sig).into_string();
         info!("get_account_by_sol_sig {{ pubkey: {pubkey}, sol_sig: {sol_sig_str} }}");
         let time_start = Instant::now();
@@ -699,13 +476,13 @@ impl ClickHouseDb {
         };
 
         // Try to find account changes within the given slot.
-        let query = r"
+        let query = r#"
             SELECT DISTINCT ON (pubkey, txn_signature, write_version)
-                   pubkey, owner, lamports, executable, rent_epoch, data, txn_signature
+                   owner, lamports, executable, rent_epoch, data, txn_signature
             FROM events.update_account_distributed
             WHERE slot = ? AND pubkey = ?
             ORDER BY write_version DESC
-        ";
+        "#;
 
         let pubkey_str = format!("{:?}", pubkey.to_bytes());
         let time_start = Instant::now();
@@ -747,17 +524,155 @@ impl ClickHouseDb {
             return row_found
                 .map(|row| {
                     row.try_into()
-                        .map_err(|err| anyhow!(ChError::Db(clickhouse::error::Error::Custom(err))))
+                        .map_err(|err| ChError::Db(clickhouse::error::Error::Custom(err)))
                 })
                 .transpose();
         }
 
         // If not found, get closest account state in one of previous slots
         if let Some(parent) = slot.parent {
-            self.get_account_at(pubkey, parent, None, bin_slice).await
+            self.get_account_at(pubkey, parent, None).await
         } else {
             Ok(None)
         }
+    }
+
+    pub async fn get_neon_revision(&self, slot: Slot, pubkey: &Pubkey) -> ChResult<String> {
+        let query = r#"SELECT data
+        FROM events.update_account_distributed
+        WHERE
+            pubkey = ? AND slot <= ?
+        ORDER BY
+            pubkey ASC,
+            slot ASC,
+            write_version ASC
+        LIMIT 1
+        "#;
+
+        let pubkey_str = format!("{:?}", pubkey.to_bytes());
+
+        let data = Self::row_opt(
+            self.client
+                .query(query)
+                .bind(pubkey_str)
+                .bind(slot)
+                .fetch_one::<Vec<u8>>()
+                .await,
+        )?;
+        if let Some(data) = data {
+            let neon_revision =
+                get_elf_parameter(data.as_slice(), "NEON_REVISION").map_err(|e| {
+                    ChError::Db(clickhouse::error::Error::Custom(format!(
+                        "Failed to get NEON_REVISION, error: {e:?}",
+                    )))
+                })?;
+            Ok(neon_revision)
+        } else {
+            let err = clickhouse::error::Error::Custom(format!(
+                "get_neon_revision: for slot {slot} and pubkey {pubkey} not found",
+            ));
+            Err(ChError::Db(err))
+        }
+    }
+
+    pub async fn get_neon_revisions(&self, pubkey: &Pubkey) -> ChResult<RevisionMap> {
+        let query = r#"SELECT slot, data
+        FROM events.update_account_distributed
+        WHERE
+            pubkey = ?
+        ORDER BY
+            slot ASC,
+            write_version ASC"#;
+
+        let pubkey_str = format!("{:?}", pubkey.to_bytes());
+        let rows: Vec<RevisionRow> = self
+            .client
+            .query(query)
+            .bind(pubkey_str)
+            .fetch_all()
+            .await?;
+
+        let mut results: Vec<(u64, String)> = Vec::new();
+
+        for row in rows {
+            let neon_revision = get_elf_parameter(&row.data, "NEON_REVISION").map_err(|e| {
+                ChError::Db(clickhouse::error::Error::Custom(format!(
+                    "Failed to get NEON_REVISION, error: {e}",
+                )))
+            })?;
+            results.push((row.slot, neon_revision));
+        }
+        let ranges = RevisionMap::build_ranges(&results);
+
+        Ok(RevisionMap::new(ranges))
+    }
+
+    pub async fn get_slot_by_blockhash(&self, blockhash: &str) -> ChResult<u64> {
+        let query = r#"SELECT slot
+        FROM events.notify_block_distributed
+        WHERE hash = ?
+        LIMIT 1
+        "#;
+
+        let slot = Self::row_opt(
+            self.client
+                .query(query)
+                .bind(blockhash)
+                .fetch_one::<u64>()
+                .await,
+        )?;
+        slot.map_or_else(
+            || {
+                Err(ChError::Db(clickhouse::error::Error::Custom(
+                    "get_slot_by_blockhash: no data available".to_string(),
+                )))
+            },
+            Ok,
+        )
+    }
+
+    pub async fn get_sync_status(&self) -> ChResult<EthSyncStatus> {
+        let query_is_startup = r#"SELECT is_startup
+        FROM events.update_account_distributed
+        WHERE slot = (
+          SELECT MAX(slot)
+          FROM events.update_account_distributed
+        )
+        LIMIT 1
+        "#;
+
+        let is_startup = Self::row_opt(
+            self.client
+                .query(query_is_startup)
+                .fetch_one::<bool>()
+                .await,
+        )?;
+
+        if is_startup == Some(true) {
+            let query = r#"SELECT slot
+            FROM (
+              (SELECT MIN(slot) as slot FROM events.notify_block_distributed)
+              UNION ALL
+              (SELECT MAX(slot) as slot FROM events.notify_block_distributed)
+              UNION ALL
+              (SELECT MAX(slot) as slot FROM events.notify_block_distributed)
+            )
+            ORDER BY slot ASC
+            "#;
+
+            let data = Self::row_opt(self.client.query(query).fetch_one::<EthSyncing>().await)?;
+
+            return data.map_or_else(
+                || {
+                    Err(ChError::Db(clickhouse::error::Error::Custom(
+                        "get_sync_status: no data available".to_string(),
+                    )))
+                },
+                |data| Ok(EthSyncStatus::new(Some(data))),
+            );
+        }
+
+        Ok(EthSyncStatus::new(None))
     }
 
     fn row_opt<T>(result: clickhouse::error::Result<T>) -> clickhouse::error::Result<Option<T>> {

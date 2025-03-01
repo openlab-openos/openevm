@@ -31,8 +31,7 @@ pub async fn emulate(
     process_result(
         &EmulateCommand::execute(
             &rpc,
-            &state.config.db_config,
-            &state.config.evm_loader,
+            state.config.evm_loader,
             emulate_request.body,
             None::<TracerTypeEnum>,
         )

@@ -19,8 +19,6 @@ pub fn process<'a>(
         "govertest"
     } else if cfg!(feature = "ci") {
         "ci"
-    } else if cfg!(feature = "rollup") {
-        "rollup"
     } else {
         "unknown"
     };

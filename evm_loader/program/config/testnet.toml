@@ -1,7 +1,4 @@
 program_id = "eeLSJgWzzxrqKv1UxtRVVH8FX3qCQWUs9QuAjJpETGU"
-
-no_update_tracking_owners = []
-
 operators_whitelist = [
     "NeoQM3utcHGxhKT41Nq81g8t4xGcPNFpkAgYj1N2N8v",
     "Gw3Xiwve6HdvpJeQguhwT23cpK9nRjSy1NpNYCFY4XU9",
@@ -240,7 +237,3 @@ operators_whitelist = [
 [chain.neon]
 id = 245022940
 token = "89dre8rZjLNft7HoupGiyxu3MNftR577ZYu8bHe2kK7g"
-
-[chain.sol]
-id = 245022941
-token = "So11111111111111111111111111111111111111112"

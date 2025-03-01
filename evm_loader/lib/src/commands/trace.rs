@@ -1,8 +1,5 @@
 #![allow(clippy::missing_errors_doc)]
 
-use crate::commands::emulate::EmulateResponse;
-use crate::config::DbConfig;
-use log::info;
 use serde_json::Value;
 use solana_sdk::pubkey::Pubkey;
 
@@ -14,10 +11,9 @@ use crate::types::EmulateRequest;
 
 pub async fn trace_transaction(
     rpc: &(impl Rpc + BuildConfigSimulator),
-    db_config: &Option<DbConfig>,
-    program_id: &Pubkey,
+    program_id: Pubkey,
     emulate_request: EmulateRequest,
-) -> Result<(EmulateResponse, Option<Value>), NeonError> {
+) -> Result<Value, NeonError> {
     let trace_config = emulate_request
         .trace_config
         .as_ref()
@@ -26,10 +22,8 @@ pub async fn trace_transaction(
 
     let tracer = new_tracer(&emulate_request.tx, trace_config)?;
 
-    let response =
-        super::emulate::execute(rpc, db_config, program_id, emulate_request, Some(tracer)).await?;
+    let (_, emulated_traces) =
+        super::emulate::execute(rpc, program_id, emulate_request, Some(tracer)).await?;
 
-    info!("response: {:?}", response);
-
-    Ok(response)
+    Ok(emulated_traces.expect("traces should not be None"))
 }

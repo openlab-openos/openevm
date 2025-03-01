@@ -1,18 +1,19 @@
 use ethnum::U256;
+use solana_program::account_info::AccountInfo;
 use solana_program::instruction::Instruction;
 use solana_program::program::{invoke_signed_unchecked, invoke_unchecked};
 use solana_program::system_program;
 
 use crate::account::{AllocateResult, ContractAccount, StorageCell};
-use crate::account_storage::{SyncedAccountStorage, FAKE_OPERATOR};
+use crate::account_storage::SyncedAccountStorage;
 use crate::config::{ACCOUNT_SEED_VERSION, STORAGE_ENTRIES_IN_CONTRACT_ACCOUNT};
-use crate::error::{Error, Result};
-use crate::types::{vector::Vector, Address};
+use crate::error::Result;
+use crate::types::Address;
 
 use super::{AccountStorage, ProgramAccountStorage};
 
 impl<'a> SyncedAccountStorage for crate::account_storage::ProgramAccountStorage<'a> {
-    fn set_code(&mut self, address: Address, chain_id: u64, code: Vector<u8>) -> Result<()> {
+    fn set_code(&mut self, address: Address, chain_id: u64, code: Vec<u8>) -> Result<()> {
         let result = ContractAccount::allocate(
             address,
             &code,
@@ -101,8 +102,9 @@ impl<'a> SyncedAccountStorage for crate::account_storage::ProgramAccountStorage<
 
     fn execute_external_instruction(
         &mut self,
-        mut instruction: Instruction,
-        seeds: Vector<Vector<Vector<u8>>>,
+        instruction: Instruction,
+        seeds: Vec<Vec<Vec<u8>>>,
+        _fee: u64,
         _emulated_internally: bool,
     ) -> Result<()> {
         let seeds = seeds
@@ -116,30 +118,34 @@ impl<'a> SyncedAccountStorage for crate::account_storage::ProgramAccountStorage<
         let program = self.accounts.get(&instruction.program_id).clone();
         accounts_info.push(program);
 
-        for meta in &mut instruction.accounts {
-            if meta.pubkey == FAKE_OPERATOR {
-                meta.pubkey = self.accounts.operator_key();
-            }
-            let account = self.accounts.get(&meta.pubkey).clone();
+        for meta in &instruction.accounts {
+            let account: AccountInfo<'a> = if meta.pubkey == self.accounts.operator_key() {
+                self.accounts.operator_info().clone()
+            } else {
+                self.accounts.get(&meta.pubkey).clone()
+            };
             accounts_info.push(account);
         }
+
         let instruction = Instruction {
             program_id: instruction.program_id,
             accounts: instruction.accounts,
             data: instruction.data,
         };
+
         if !seeds.is_empty() {
             invoke_signed_unchecked(&instruction, &accounts_info, &seeds)?;
         } else {
             invoke_unchecked(&instruction, &accounts_info)?;
         }
+
         Ok(())
     }
 
     fn snapshot(&mut self) {}
 
     fn revert_snapshot(&mut self) {
-        panic_with_error!(Error::RevertAfterSolanaCall);
+        panic!("revert snapshot not implemented for ProgramAccountStorage");
     }
 
     fn commit_snapshot(&mut self) {}

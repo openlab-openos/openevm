@@ -1,6 +1,6 @@
 use crate::{config::APIOptions, Config};
 
-use super::{Rpc, SliceConfig};
+use super::Rpc;
 use async_trait::async_trait;
 use solana_account_decoder::{UiAccount, UiAccountEncoding};
 use solana_client::{
@@ -10,11 +10,13 @@ use solana_client::{
     rpc_request::RpcRequest,
     rpc_response::Response,
 };
-use solana_sdk::{account::Account, pubkey::Pubkey};
-
+use solana_sdk::{
+    account::Account,
+    clock::{Slot, UnixTimestamp},
+    pubkey::Pubkey,
+};
 use std::{error::Error, ops::Deref, time::Duration};
 use std::{future::Future, sync::Arc};
-use tracing::debug;
 
 fn should_retry(e: &ClientError) -> bool {
     let ClientErrorKind::Reqwest(reqwest_error) = e.kind() else {
@@ -110,16 +112,12 @@ impl Deref for CloneRpcClient {
 
 #[async_trait(?Send)]
 impl Rpc for CloneRpcClient {
-    async fn get_account_slice(
-        &self,
-        key: &Pubkey,
-        slice: Option<SliceConfig>,
-    ) -> ClientResult<Option<Account>> {
+    async fn get_account(&self, key: &Pubkey) -> ClientResult<Option<Account>> {
         let request = || {
             let config = RpcAccountInfoConfig {
                 encoding: Some(UiAccountEncoding::Base64Zstd),
                 commitment: Some(self.commitment()),
-                data_slice: slice,
+                data_slice: None,
                 min_context_slot: None,
             };
             let params = serde_json::json!([key.to_string(), config]);
@@ -144,10 +142,6 @@ impl Rpc for CloneRpcClient {
 
         if pubkeys.len() == 1 {
             let account = Rpc::get_account(self, &pubkeys[0]).await?;
-            debug!(
-                "get_multiple_accounts: single account pubkey={} account={:?}",
-                pubkeys[0], account
-            );
             return Ok(vec![account]);
         }
 
@@ -156,14 +150,18 @@ impl Rpc for CloneRpcClient {
             let request = || self.rpc.get_multiple_accounts(chunk);
 
             let mut accounts = with_retries(self.max_retries, request).await?;
-            debug!(
-                "get_multiple_accounts: chunk pubkey={:?} account={:?}",
-                chunk, accounts
-            );
             result.append(&mut accounts);
         }
 
         Ok(result)
+    }
+
+    async fn get_block_time(&self, slot: Slot) -> ClientResult<UnixTimestamp> {
+        with_retries(self.max_retries, || self.rpc.get_block_time(slot)).await
+    }
+
+    async fn get_slot(&self) -> ClientResult<Slot> {
+        with_retries(self.max_retries, || self.rpc.get_slot()).await
     }
 
     async fn get_deactivated_solana_features(&self) -> ClientResult<Vec<Pubkey>> {
@@ -201,10 +199,6 @@ impl Rpc for CloneRpcClient {
             if !is_activated {
                 result.push(*pubkey);
             }
-        }
-
-        for feature in &result {
-            debug!("Deactivated feature: {}", feature);
         }
 
         cache.replace(Cache {

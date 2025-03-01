@@ -183,7 +183,7 @@ impl EventListener for CallTracer {
                 ..
             } => {
                 self.depth += 1;
-                self.handle_begin_vm(&context, opcode, input);
+                self.handle_begin_vm(context, opcode, input);
             }
             Event::EndVM { status, .. } => {
                 self.handle_end_vm(status);
@@ -242,11 +242,11 @@ impl EventListener for CallTracer {
 }
 
 impl CallTracer {
-    fn handle_begin_vm(&mut self, context: &Context, opcode: Opcode, input: Vec<u8>) {
+    fn handle_begin_vm(&mut self, context: Context, opcode: Opcode, input: Vec<u8>) {
         if self.depth == 1 {
             let call_frame = &mut self.call_stack[0];
             call_frame.from = context.caller;
-            call_frame.to = context.code_address.or(Some(context.contract));
+            call_frame.to = Some(context.contract);
             call_frame.input = input.into();
             call_frame.value = Some(to_web3_u256(context.value));
             call_frame.type_string = opcode;
@@ -259,7 +259,7 @@ impl CallTracer {
 
         self.call_stack.push(CallFrame {
             from: context.caller,
-            to: context.code_address.or(Some(context.contract)),
+            to: Some(context.contract),
             input: input.into(),
             value: Some(to_web3_u256(context.value)),
             type_string: opcode,

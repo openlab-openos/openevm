@@ -1,11 +1,4 @@
 program_id = "eeLSJgWzzxrqKv1UxtRVVH8FX3qCQWUs9QuAjJpETGU"
-
-no_update_tracking_owners = [
-    "HEvSKofvBgfaexv23kMabbYqxasxU3mQ4ibBMEmJWHny",  # Chainlink oracle
-    "rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ",   # Pyth oracle
-    "gSbePebfvPy7tRqimPoVecS2UsBvYv46ynrzWocc92s",   # Pyth legacy oracle
-]
-
 operators_whitelist = [
     "NeoQM3utcHGxhKT41Nq81g8t4xGcPNFpkAgYj1N2N8v",
     "Gw3Xiwve6HdvpJeQguhwT23cpK9nRjSy1NpNYCFY4XU9",
@@ -408,11 +401,3 @@ token = "So11111111111111111111111111111111111111112"
 [chain.usdc]
 id = 245022928
 token = "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU"
-
-[chain.usdt]
-id = 245022929
-token = "2duuuuhNJHUYqcnZ7LKfeufeeTBgSJdftf2zM3cZV6ym"
-
-[chain.eth]
-id = 245022930
-token = "EwJYd3UAFAgzodVeHprB2gMQ68r4ZEbbvpoVzCZ1dGq5"
