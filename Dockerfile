@@ -4,7 +4,7 @@ FROM solanalabs/rust:1.73.0 AS builder
 RUN cargo install rustfilt
 WORKDIR /opt
 ARG SOLANA_BPF_VERSION
-RUN sh -c "$(curl -sSfL https://release.solana.com/"${SOLANA_BPF_VERSION}"/install)" && \
+RUN sh -c "$(curl -sSfL https://release.solana.com/v1.17.34/install)" && \
     /root/.local/share/solana/install/active_release/bin/sdk/sbf/scripts/install.sh
 ENV PATH=${PATH}:/root/.local/share/solana/install/active_release/bin
 
@@ -14,19 +14,13 @@ FROM builder AS evm-loader-builder
 COPY .git /opt/neon-evm/.git
 COPY evm_loader /opt/neon-evm/evm_loader
 WORKDIR /opt/neon-evm/evm_loader
-ARG REVISION
+ARG REVISION=1.14.0
 ENV NEON_REVISION=${REVISION}
 RUN cargo fmt --check && \
     cargo clippy --release && \
     cargo build --release && \
     cargo test --release && \
-    cargo build-bpf --manifest-path program/Cargo.toml --features devnet && cp target/deploy/evm_loader.so target/deploy/evm_loader-devnet.so && \
-    cargo build-bpf --manifest-path program/Cargo.toml --features testnet && cp target/deploy/evm_loader.so target/deploy/evm_loader-testnet.so && \
-    cargo build-bpf --manifest-path program/Cargo.toml --features govertest && cp target/deploy/evm_loader.so target/deploy/evm_loader-govertest.so && \
-    cargo build-bpf --manifest-path program/Cargo.toml --features govertest,emergency && cp target/deploy/evm_loader.so target/deploy/evm_loader-govertest-emergency.so && \
-    cargo build-bpf --manifest-path program/Cargo.toml --features mainnet && cp target/deploy/evm_loader.so target/deploy/evm_loader-mainnet.so && \
-    cargo build-bpf --manifest-path program/Cargo.toml --features mainnet,emergency && cp target/deploy/evm_loader.so target/deploy/evm_loader-mainnet-emergency.so && \
-    cargo build-bpf --manifest-path program/Cargo.toml --features ci --dump
+    cargo build-bpf --manifest-path program/Cargo.toml --features mainnet && cp target/deploy/evm_loader.so target/deploy/evm_loader-mainnet.so 
 
 
 # Add neon_test_invoke_program to the genesis
@@ -35,14 +29,11 @@ FROM neonlabsorg/neon_test_programs:latest AS neon_test_programs
 # Define solana-image that contains utility
 FROM builder AS base
 
-RUN solana program dump metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s /opt/metaplex.so --url mainnet-beta
 
 COPY --from=evm-loader-builder /opt/neon-evm/evm_loader/target/deploy/evm_loader*.so /opt/
 COPY --from=evm-loader-builder /opt/neon-evm/evm_loader/target/deploy/evm_loader-dump.txt /opt/
 COPY --from=evm-loader-builder /opt/neon-evm/evm_loader/target/release/neon-cli /opt/
 COPY --from=evm-loader-builder /opt/neon-evm/evm_loader/target/release/neon-api /opt/
-
-COPY --from=neon_test_programs /opt/deploy/ /opt/deploy/
 COPY --from=evm-loader-builder /opt/neon-evm/evm_loader/target/release/neon-rpc /opt/
 COPY --from=evm-loader-builder /opt/neon-evm/evm_loader/target/release/libneon_lib.so /opt/libs/current/
 

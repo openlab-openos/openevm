@@ -12,16 +12,16 @@ members = [
 ]
 
 [workspace.dependencies]
-solana-clap-utils = "=1.17.34"
-solana-cli = "=1.17.34"
-solana-cli-config = "=1.17.34"
-solana-client = "=1.17.34"
-solana-account-decoder = "=1.17.34"
-solana-program = { version = "=1.17.34", default-features = false }
-solana-sdk = "=1.17.34"
-solana-program-runtime = "=1.17.34"
-solana-runtime = "=1.17.34"
-solana-accounts-db = "=1.17.34"
+solana-clap-utils = { git = "https://github.com/openlab-openos/openos" ,package="solana-clap-utils" }
+solana-cli = { git = "https://github.com/openlab-openos/openos" ,package="solana-cli" }
+solana-cli-config = { git = "https://github.com/openlab-openos/openos" ,package="solana-cli-config" }
+solana-client = { git = "https://github.com/openlab-openos/openos" ,package="solana-client" }
+solana-account-decoder =  { git = "https://github.com/openlab-openos/openos" ,package="solana-account-decoder" }
+solana-program = { git = "https://github.com/openlab-openos/openos" ,package="solana-program", default-features = false }
+solana-sdk = { git = "https://github.com/openlab-openos/openos" ,package="solana-sdk" }
+solana-program-runtime = { git = "https://github.com/openlab-openos/openos" ,package="solana-program-runtime" }
+solana-runtime =  { git = "https://github.com/openlab-openos/openos" ,package="solana-runtime" }
+solana-accounts-db =  { git = "https://github.com/openlab-openos/openos" ,package="solana-accounts-db" }
 
 [profile.test]
 debug = true

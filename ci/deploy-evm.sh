@@ -29,5 +29,5 @@ fi
 echo "Deployed finished from " $(solana address) " with " $(solana balance)
 neon-cli --url $SOLANA_URL --evm_loader $EVM_LOADER \
   --keypair evm_loader-keypair.json \
-  --solana_key_for_config BMp6gEnveANdvSvspESJUrNczuHz1GF5UQKjVLCkAZih \
+  --solana_key_for_config 86KRyxmrm4QnZXdrnf4NpHDNM3hdduUyS3gXgPhZjGuY \
   --loglevel debug init-environment --send-trx --keys-dir keys/

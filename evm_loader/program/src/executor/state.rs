@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use ethnum::{AsU256, U256};
 use maybe_async::maybe_async;
-use mpl_token_metadata::programs::MPL_TOKEN_METADATA_ID;
+// use mpl_token_metadata::programs::MPL_TOKEN_METADATA_ID;
 use solana_program::instruction::Instruction;
 use solana_program::pubkey::Pubkey;
 use solana_program::rent::Rent;
@@ -477,14 +477,14 @@ impl<'a, B: AccountStorage> Database for ExecutorState<'a, B> {
                             self.rent(),
                         )?;
                     }
-                    program_id if &MPL_TOKEN_METADATA_ID == program_id => {
-                        crate::external_programs::metaplex::emulate(
-                            data,
-                            meta,
-                            &mut accounts,
-                            self.rent(),
-                        )?;
-                    }
+                    // program_id if &MPL_TOKEN_METADATA_ID == program_id => {
+                    //     crate::external_programs::metaplex::emulate(
+                    //         data,
+                    //         meta,
+                    //         &mut accounts,
+                    //         self.rent(),
+                    //     )?;
+                    // }
                     _ => {
                         return Err(Error::Custom(format!(
                             "Unknown external program for emulate: {program_id}"
