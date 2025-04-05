@@ -7,7 +7,6 @@ Dockerfile.*
 .gitmodules
 .dockerfile
 
-bin
 target
 evm_loader/program/target
 evm_loader/cli/target
@@ -16,7 +15,9 @@ evm_loader/rust-evm/core/target
 evm_loader/rust-evm/gasometer/target
 evm_loader/rust-evm/runtime/target
 evm_loader/rust-evm/src/target
-evm_loader/target
+evm_loader/target/release/deps
+evm_loader/target/release/build
+evm_loader/target/sbf-solana-solana
 test-ledger
 
 .idea
